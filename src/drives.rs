@@ -71,7 +71,31 @@ fn b(v: &serde_json::Value, k: &str) -> bool {
 fn mountpoint_of(v: &serde_json::Value) -> String {
     // util-linux >= 2.37 reports "mountpoints": [...]; older "mountpoint".
     if let Some(arr) = v.get("mountpoints").and_then(|m| m.as_array()) {
-        if let Some(first) = arr.iter().filter_map(|m| m.as_str()).find(|m| !m.is_empty()) {
+        let mut valid: Vec<&str> = arr.iter().filter_map(|m| m.as_str()).filter(|m| !m.is_empty()).collect();
+        // Sort candidate mountpoints stably: category priority, then shortest path, then lexical tiebreak.
+        fn score(m: &str) -> u8 {
+            if m == "/" {
+                0
+            } else if m == "/home" {
+                1
+            } else if m.starts_with("/home/") {
+                2
+            } else if m.starts_with("/media/") || m.starts_with("/run/media/") {
+                3
+            } else if m.starts_with("/mnt/") {
+                4
+            } else if !m.starts_with("/var/") && !m.starts_with("/srv") && !m.starts_with("/root") {
+                5
+            } else {
+                6
+            }
+        }
+        valid.sort_by(|a, b| {
+            score(a).cmp(&score(b))
+                .then_with(|| a.len().cmp(&b.len()))
+                .then_with(|| a.cmp(b))
+        });
+        if let Some(first) = valid.first() {
             return first.to_string();
         }
     }
@@ -174,7 +198,33 @@ pub fn parse_lsblk(json: &str, usage: &dyn Fn(&str) -> Option<(u64, u64)>, remov
         };
         walk(d, &ctx, "", &mut out);
     }
+
+    // Disambiguate duplicate display names across drives (e.g. btrfs multi-volumes sharing label)
+    disambiguate_drive_names(&mut out);
+
     out
+}
+
+fn disambiguate_drive_names(drives: &mut [Drive]) {
+    use std::collections::HashMap;
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for d in drives.iter() {
+        *counts.entry(d.name.clone()).or_insert(0) += 1;
+    }
+
+    for d in drives.iter_mut() {
+        if counts.get(&d.name).copied().unwrap_or(0) > 1 {
+            let suffix = if !d.mount_point.is_empty() {
+                d.mount_point.clone()
+            } else {
+                Path::new(&d.device)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| d.device.clone())
+            };
+            d.name = format!("{} ({})", d.name, suffix);
+        }
+    }
 }
 
 /// All drives (runs `lsblk`; call from a worker thread).
@@ -210,9 +260,13 @@ fn udisks(args: &[&str], stdin: Option<&[u8]>) -> Result<String, String> {
 }
 
 pub fn mount(device: &str) -> Result<String, String> {
-    let out = udisks(&["mount", "-b", device], None)?;
-    // "Mounted /dev/sdb1 at /run/media/u/LABEL"
-    Ok(out.trim().rsplit(" at ").next().unwrap_or("").trim_end_matches('.').to_string())
+    udisks(&["mount", "-b", device], None)?;
+    // Resolve from the filesystem model: udisksctl's human-readable output
+    // can be localized and is not a reliable navigation target.
+    list().into_iter()
+        .find(|d| d.device == device && d.is_mounted)
+        .map(|d| d.mount_point)
+        .ok_or_else(|| "mounted device has no discoverable mount point".to_string())
 }
 
 pub fn unmount(device: &str) -> Result<(), String> {
@@ -304,18 +358,62 @@ mod tests {
 
     #[test]
     fn parses_drives() {
-        let d = parse_lsblk(SAMPLE, &|m| if m == "/home" { Some((1000, 250)) } else { None }, &|_| false);
+        let d = parse_lsblk(SAMPLE, &|m| if m == "/" { Some((1000, 250)) } else { None }, &|_| false);
         let names: Vec<_> = d.iter().map(|x| x.device.as_str()).collect();
         assert_eq!(names, vec!["/dev/nvme0n1p2", "/dev/sdb1", "/dev/sdc1"], "efi, swap and loop are hidden");
         let root = &d[0];
         assert_eq!(root.name, "fedora");
-        assert_eq!(root.mount_point, "/home");
+        assert_eq!(root.mount_point, "/", "prefers / when multiple mountpoints are present");
         assert_eq!(root.percent, 75.0);
         assert!(!root.is_external);
         let usb = &d[1];
         assert!(usb.is_external && !usb.is_mounted);
         assert_eq!(usb.disk, "/dev/sdb");
         assert!(d[2].is_locked, "LUKS container needs unlocking");
+    }
+
+    #[test]
+    fn disambiguates_duplicate_labels() {
+        let json = r#"{"blockdevices":[
+          {"name":"nvme0n1","path":"/dev/nvme0n1","label":null,"mountpoints":[],"fstype":null,"size":500000000000,"rm":false,"hotplug":false,"tran":"nvme","model":"FastNVMe","type":"disk","children":[
+            {"name":"nvme0n1p6","path":"/dev/nvme0n1p6","label":"linux-root","mountpoints":["/var/log","/"],"fstype":"btrfs","size":80000000000,"rm":false,"hotplug":false,"tran":null,"model":null,"type":"part"},
+            {"name":"nvme0n1p8","path":"/dev/nvme0n1p8","label":"linux-root","mountpoints":["/home"],"fstype":"btrfs","size":200000000000,"rm":false,"hotplug":false,"tran":null,"model":null,"type":"part"},
+            {"name":"nvme0n1p9","path":"/dev/nvme0n1p9","label":"data","mountpoints":[],"fstype":"ext4","size":50000000000,"rm":false,"hotplug":false,"tran":null,"model":null,"type":"part"},
+            {"name":"nvme0n1p10","path":"/dev/nvme0n1p10","label":"data","mountpoints":[],"fstype":"ext4","size":50000000000,"rm":false,"hotplug":false,"tran":null,"model":null,"type":"part"}
+          ]}
+        ]}"#;
+        let d = parse_lsblk(json, &|_| Some((100, 50)), &|_| false);
+        assert_eq!(d.len(), 4);
+        assert_eq!(d[0].device, "/dev/nvme0n1p6");
+        assert_eq!(d[0].mount_point, "/");
+        assert_eq!(d[0].name, "linux-root (/)");
+
+        assert_eq!(d[1].device, "/dev/nvme0n1p8");
+        assert_eq!(d[1].mount_point, "/home");
+        assert_eq!(d[1].name, "linux-root (/home)");
+
+        assert_eq!(d[2].device, "/dev/nvme0n1p9");
+        assert_eq!(d[2].name, "data (nvme0n1p9)");
+
+        assert_eq!(d[3].device, "/dev/nvme0n1p10");
+        assert_eq!(d[3].name, "data (nvme0n1p10)");
+    }
+
+    #[test]
+    fn mountpoint_choice_is_independent_of_listing_order() {
+        for mounts in [
+            vec!["/var/log", "/home", "/"],
+            vec!["/", "/home", "/var/log"],
+        ] {
+            assert_eq!(mountpoint_of(&serde_json::json!({"mountpoints": mounts})), "/");
+        }
+        for mounts in [
+            vec!["/var/log", "/mnt/z", "/mnt/a"],
+            vec!["/mnt/a", "/mnt/z", "/var/log"],
+        ] {
+            assert_eq!(mountpoint_of(&serde_json::json!({"mountpoints": mounts})), "/mnt/a");
+        }
+        assert_eq!(mountpoint_of(&serde_json::json!({"mountpoint": "/home"})), "/home");
     }
 
     #[test]

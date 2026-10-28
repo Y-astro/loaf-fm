@@ -186,27 +186,15 @@ Item {
     // ---- drive actions -----------------------------------------------------
 
     function openDrive(d) {
-        if (pcView.isMounted(d)) {
-            window.showFiles();
-            engine.set_path(d.mount_point);
-        } else {
-            pcView.mountDrive(d);
-        }
+        window.openDrive(d, false);
     }
 
     function mountDrive(d) {
-        if (!d)
-            return;
-        if (d.is_locked)
-            core.unlock_drive(d.device, "", false); // keyring first, then asks
-        else
-            core.mount_drive(d.device);
+        window.mountDrive(d);
     }
 
     function unmountDrive(d) {
-        if (!d)
-            return;
-        core.unmount_drive(d.device);
+        window.unmountDrive(d);
     }
 
     // Folder shortcuts: the user's real (localized) folders, issue #21/#22.
@@ -279,16 +267,6 @@ Item {
             "separatorBefore": true,
             "action": function () { pcView.requestRename(d); }
         });
-        if (external) {
-            items.push({
-                "text": qsTr("Eject"),
-                "icon": "eject",
-                "danger": true,
-                "enabled": mounted,
-                "separatorBefore": true,
-                "action": function () { pcView.unmountDrive(d); }
-            });
-        }
         return items;
     }
 

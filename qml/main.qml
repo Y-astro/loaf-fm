@@ -42,6 +42,75 @@ ApplicationWindow {
     property var tabs: [{ states: ["", ""], split: false, active: 0, title: "" }]
     property int currentTab: 0
 
+    // Async drive mount auto-open tracking
+    property string pendingMountDevice: ""
+    property bool pendingMountInNewTab: false
+    property string pendingMountView: ""
+
+    function cancelDriveOpen() {
+        pendingMountDevice = "";
+        pendingMountInNewTab = false;
+        pendingMountView = "";
+    }
+
+    onActiveViewChanged: {
+        if (pendingMountDevice.length > 0 && activeView !== pendingMountView)
+            cancelDriveOpen();
+    }
+
+    onCurrentTabChanged: cancelDriveOpen()
+    onActivePaneChanged: cancelDriveOpen()
+
+    Connections {
+        target: window.engine
+        function onCurrent_pathChanged() { window.cancelDriveOpen(); }
+        function onLocation_kindChanged() { window.cancelDriveOpen(); }
+    }
+
+    function openDrive(d, inNewTab) {
+        if (!d || !d.device)
+            return;
+        if (d.is_mounted && d.mount_point) {
+            window.cancelDriveOpen();
+            if (inNewTab) {
+                window.newTab(d.mount_point);
+                return;
+            }
+            window.showFiles();
+            searchInput.text = "";
+            engine.set_path(d.mount_point);
+            return;
+        }
+        if (core.busy)
+            return;
+        if (window.pendingMountDevice.length > 0)
+            return;
+
+        window.pendingMountDevice = d.device || "";
+        window.pendingMountInNewTab = !!inNewTab;
+        window.pendingMountView = window.activeView;
+        window.mountDrive(d);
+    }
+
+    function mountDrive(d) {
+        if (!d)
+            return;
+        if (core.busy)
+            return;
+        if (d.is_locked)
+            core.unlock_drive(d.device, "", false);
+        else
+            core.mount_drive(d.device);
+    }
+
+    function unmountDrive(d) {
+        if (!d)
+            return;
+        if (core.busy)
+            return;
+        core.unmount_drive(d.device);
+    }
+
     // Paths currently cut to the clipboard (dimmed in the views).
     property var cutSet: ({})
 
@@ -52,6 +121,7 @@ ApplicationWindow {
         || smbDialog.visible
         || window.isEditingPath
     readonly property bool gridKeyboardReady: activeView === "files" && !searchInput.activeFocus
+        && !sidebar.keyboardHasFocus
         && !newTabToolbarButton.activeFocus && !newWindowToolbarButton.activeFocus
         && !pathInput.activeFocus && !anyModalOpen && !!activePane && activePane.renamingPath === ""
     // helpers used by the panes and dialogs
@@ -276,6 +346,7 @@ ApplicationWindow {
     }
 
     function restoreTab(i) {
+        window.cancelDriveOpen();
         var t = tabs[i];
         if (!t) return;
         currentTab = i;
@@ -723,6 +794,16 @@ ApplicationWindow {
 
     LoafCore {
         id: core
+        onDrives_jsonChanged: {
+            if (window.pendingMountDevice.length > 0) {
+                var drives = JSON.parse(core.drives_json || "[]");
+                var present = drives.some(function(d) {
+                    return d.device === window.pendingMountDevice || d.crypt_device === window.pendingMountDevice;
+                });
+                if (!present)
+                    window.cancelDriveOpen();
+            }
+        }
         onNotify: function(kind, text) { window.toast(kind, text); }
         onOperation_finished: function(kind, ok, resultJson) {
             var r = null;
@@ -736,6 +817,28 @@ ApplicationWindow {
             }
             if (r && r.reload_drives)
                 core.load_drives();
+            if (kind === "drive") {
+                if (r && (r.action === "mount" || r.action === "unlock")
+                        && window.pendingMountDevice.length > 0 && r.device === window.pendingMountDevice) {
+                    // A wrong password reopens the existing prompt; retain the
+                    // user's navigation request for the authenticated retry.
+                    var retrying = !ok && r.action === "unlock" && passwordModal.visible
+                        && passwordModal.request.device === r.device;
+                    if (!retrying) {
+                        var inNewTab = window.pendingMountInNewTab;
+                        window.cancelDriveOpen();
+                        if (ok && r.mount_point) {
+                            if (inNewTab)
+                                window.newTab(r.mount_point);
+                            else {
+                                window.showFiles();
+                                searchInput.text = "";
+                                engine.set_path(r.mount_point);
+                            }
+                        }
+                    }
+                }
+            }
             if (r && r.created && r.created.length > 0) {
                 // Select what was just created in the pane showing its folder.
                 var parent = r.created[0].substring(0, r.created[0].lastIndexOf("/"));
@@ -1451,9 +1554,15 @@ ApplicationWindow {
                         if (places[i].path && places[i].path === engine.current_path)
                             return places[i].id;
                     }
+                    var drives = sidebar.drives || [];
+                    for (var d = 0; d < drives.length; ++d) {
+                        if (drives[d].is_mounted && drives[d].mount_point && drives[d].mount_point === engine.current_path)
+                            return "device:" + drives[d].device;
+                    }
                     return "";
                 }
                 onPlaceClicked: function(place, inNewTab) {
+                    window.cancelDriveOpen();
                     if (place.kind === "pc") {
                         if (inNewTab) {
                             window.newTab("pc://");
@@ -1498,6 +1607,12 @@ ApplicationWindow {
                         window.toast("error", qsTr("“%1” no longer exists").arg(place.path));
                     else
                         engine.set_path(place.path);
+                }
+                onDriveClicked: function(drive, inNewTab) {
+                    window.openDrive(drive, inNewTab);
+                }
+                onDriveMenuRequested: function(drive, x, y) {
+                    window.openDriveContextMenu(drive, x, y);
                 }
                 onSettingsClicked: {
                     window.openSettings();
@@ -2547,6 +2662,11 @@ ApplicationWindow {
             openAt(x, y);
         }
     }
+    function openDriveContextMenu(d, x, y) {
+        if (!d)
+            return;
+        pcView.openDriveMenu(d, x, y);
+    }
     LoafMenu {
         id: rmbDropMenu
         menuMinWidth: 200
@@ -2692,9 +2812,11 @@ ApplicationWindow {
         id: passwordModal
         dialogWidth: 400
         property var request: ({})
+        property bool submitting: false
         title: request.kind === "luks" ? qsTr("Unlock Drive") : (request.kind === "compress" ? qsTr("Encrypted Archive") : (request.kind === "smb" ? qsTr("Connect to SMB Share") : qsTr("Password Required")))
 
         function openFor(req) {
+            submitting = false;
             request = req;
             pwField.text = "";
             pwRepeat.text = "";
@@ -2703,6 +2825,10 @@ ApplicationWindow {
         }
         // Focus only works once the popup is really shown.
         onOpened: pwField.forceActiveFocus()
+        onClosed: {
+            if (!visible && !submitting && request.kind === "luks" && request.device === window.pendingMountDevice)
+                window.cancelDriveOpen();
+        }
         // A new archive's password is typed twice: a typo would lock the
         // files away for good.
         readonly property bool needsRepeat: request.kind === "compress"
@@ -2713,6 +2839,7 @@ ApplicationWindow {
             if (!canAccept)
                 return;
             var r = request;
+            submitting = true;
             close();
             if (r.kind === "compress")
                 core.compress(JSON.stringify(r.paths), r.format, pw);

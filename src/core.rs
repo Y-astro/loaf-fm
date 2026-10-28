@@ -967,19 +967,37 @@ impl qobject::LoafCore {
         });
     }
 
-    fn drive_job<F>(self: Pin<&mut Self>, title: String, work: F)
+    fn drive_job<F>(self: Pin<&mut Self>, title: String, device: String, work: F)
     where
-        F: FnOnce() -> Result<String, String> + Send + 'static,
+        F: FnOnce() -> Result<serde_json::Value, (String, serde_json::Value)> + Send + 'static,
     {
         self.spawn_op("drive", title, move |_op| match work() {
-            Ok(msg) => {
+            Ok(val) => {
+                let msg = val.get("message").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                let mut res = val;
+                if let Some(obj) = res.as_object_mut() {
+                    obj.insert("reload_drives".to_string(), serde_json::Value::Bool(true));
+                    if !obj.contains_key("device") && !device.is_empty() {
+                        obj.insert("device".to_string(), serde_json::Value::String(device));
+                    }
+                } else {
+                    res = serde_json::json!({"reload_drives": true, "device": device});
+                }
                 let mut o = Outcome::ok(msg);
-                o.result = serde_json::json!({"reload_drives": true});
+                o.result = res;
                 o
             }
-            Err(e) => {
+            Err((e, mut res)) => {
+                if let Some(obj) = res.as_object_mut() {
+                    obj.insert("reload_drives".to_string(), serde_json::Value::Bool(true));
+                    if !obj.contains_key("device") && !device.is_empty() {
+                        obj.insert("device".to_string(), serde_json::Value::String(device));
+                    }
+                } else {
+                    res = serde_json::json!({"reload_drives": true, "device": device});
+                }
                 let mut o = Outcome::err(e);
-                o.result = serde_json::json!({"reload_drives": true});
+                o.result = res;
                 o
             }
         });
@@ -987,19 +1005,55 @@ impl qobject::LoafCore {
 
     pub fn mount_drive(self: Pin<&mut Self>, device: &QString) {
         let dev = device.to_string();
-        self.drive_job(format!("Mounting {}", dev), move || drives::mount(&dev).map(|_| String::new()));
+        let dev_clone = dev.clone();
+        self.drive_job(format!("Mounting {}", dev), dev, move || {
+            match drives::mount(&dev_clone) {
+                Ok(path) => Ok(serde_json::json!({
+                    "action": "mount",
+                    "device": dev_clone,
+                    "mount_point": path
+                })),
+                Err(e) => Err((e, serde_json::json!({
+                    "action": "mount",
+                    "device": dev_clone
+                }))),
+            }
+        });
     }
 
     pub fn unmount_drive(self: Pin<&mut Self>, device: &QString) {
         let dev = device.to_string();
-        self.drive_job(format!("Unmounting {}", dev), move || drives::unmount(&dev).map(|_| String::new()));
+        let dev_clone = dev.clone();
+        self.drive_job(format!("Unmounting {}", dev), dev, move || {
+            match drives::unmount(&dev_clone) {
+                Ok(_) => Ok(serde_json::json!({
+                    "action": "unmount",
+                    "device": dev_clone
+                })),
+                Err(e) => Err((e, serde_json::json!({
+                    "action": "unmount",
+                    "device": dev_clone
+                }))),
+            }
+        });
     }
 
     pub fn eject_drive(self: Pin<&mut Self>, disk: &QString) {
         let disk = disk.to_string();
+        let disk_clone = disk.clone();
         let snapshot = self.drives.clone();
-        self.drive_job(format!("Ejecting {}", disk), move || {
-            drives::eject(&disk, &snapshot).map(|_| "It is now safe to remove the drive".to_string())
+        self.drive_job(format!("Ejecting {}", disk), disk, move || {
+            match drives::eject(&disk_clone, &snapshot) {
+                Ok(_) => Ok(serde_json::json!({
+                    "action": "eject",
+                    "disk": disk_clone,
+                    "message": "It is now safe to remove the drive"
+                })),
+                Err(e) => Err((e, serde_json::json!({
+                    "action": "eject",
+                    "disk": disk_clone
+                }))),
+            }
         });
     }
 
@@ -1014,33 +1068,72 @@ impl qobject::LoafCore {
             }
         }
         let thread = self.qt_thread();
-        self.drive_job(format!("Unlocking {}", dev.clone()), move || match drives::unlock(&dev, &pass) {
+        let dev_clone = dev.clone();
+        self.drive_job(format!("Unlocking {}", dev.clone()), dev, move || match drives::unlock(&dev_clone, &pass) {
             Ok(clear) => {
                 if remember {
-                    secret_store(&format!("luks:{}", dev), &format!("Loaf: encrypted drive {}", dev), &pass);
+                    secret_store(&format!("luks:{}", dev_clone), &format!("Loaf: encrypted drive {}", dev_clone), &pass);
                 }
-                let _ = drives::mount(&clear);
-                Ok(String::new())
+                match drives::mount(&clear) {
+                    Ok(mount_point) => Ok(serde_json::json!({
+                        "action": "unlock",
+                        "device": dev_clone,
+                        "clear_device": clear,
+                        "mount_point": mount_point
+                    })),
+                    Err(mount_err) => Err((mount_err, serde_json::json!({
+                        "action": "unlock",
+                        "device": dev_clone,
+                        "clear_device": clear
+                    }))),
+                }
             }
             Err(e) => {
-                let dev2 = dev.clone();
+                let dev2 = dev_clone.clone();
                 let _ = thread.queue(move |mut core| {
                     core.as_mut().password_required(q(&serde_json::json!({"kind": "luks", "device": dev2, "error": true}).to_string()));
                 });
-                Err(e)
+                Err((e, serde_json::json!({
+                    "action": "unlock",
+                    "device": dev_clone
+                })))
             }
         });
     }
 
     pub fn lock_drive(self: Pin<&mut Self>, device: &QString) {
         let dev = device.to_string();
-        self.drive_job(format!("Locking {}", dev), move || drives::lock(&dev).map(|_| String::new()));
+        let dev_clone = dev.clone();
+        self.drive_job(format!("Locking {}", dev), dev, move || {
+            match drives::lock(&dev_clone) {
+                Ok(_) => Ok(serde_json::json!({
+                    "action": "lock",
+                    "device": dev_clone
+                })),
+                Err(e) => Err((e, serde_json::json!({
+                    "action": "lock",
+                    "device": dev_clone
+                }))),
+            }
+        });
     }
 
     pub fn rename_drive(self: Pin<&mut Self>, device: &QString, name: &QString) {
         let dev = device.to_string();
+        let dev_clone = dev.clone();
         let name = name.to_string();
-        self.drive_job(format!("Renaming {}", dev), move || drives::set_label(&dev, &name).map(|_| String::new()));
+        self.drive_job(format!("Renaming {}", dev), dev, move || {
+            match drives::set_label(&dev_clone, &name) {
+                Ok(_) => Ok(serde_json::json!({
+                    "action": "rename",
+                    "device": dev_clone
+                })),
+                Err(e) => Err((e, serde_json::json!({
+                    "action": "rename",
+                    "device": dev_clone
+                }))),
+            }
+        });
     }
 
     fn refresh_smb(mut self: Pin<&mut Self>) {
