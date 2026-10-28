@@ -2580,6 +2580,9 @@ impl cxx_qt::Initialize for qobject::LoafCore {
             let _ = t.queue(|core| core.load_drives());
         });
         self.as_mut().rust_mut().device_watcher = dw;
+        // Populate the sidebar on a fresh launch, before the first hotplug or
+        // mount-table event. Discovery runs off the GUI thread.
+        self.as_mut().load_drives();
         // Follow wallpaper palette changes without polling.
         let t2 = self.qt_thread();
         let cw = watcher::DirWatcher::new(move || {

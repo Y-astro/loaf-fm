@@ -59,7 +59,6 @@ Timer {
             theme.reduceMotionSetting = true;
             window.width = 640; window.height = 420;
             deviceNavigate("stay");
-            core.load_drives();
             deviceWait(function() { return sidebar.drives.length >= 10; }, "Drives not loaded");
             sidebar.expanded = true;
             deviceEvents.wait(300);
