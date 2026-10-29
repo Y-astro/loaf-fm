@@ -30,7 +30,7 @@ from gi.repository import GLib
 dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 root = Path(os.environ["LOAF_DEVICE_TEST_ROOT"])
 bus = dbus.SessionBus()
-name = dbus.service.BusName("org.kde.kiod6", bus)
+name = dbus.service.BusName("org.kde.kmtpd5", bus)
 paths = ["/modules/kmtpd/phone", "/modules/kmtpd/second", "/modules/kmtpd/locked"]
 present = True
 

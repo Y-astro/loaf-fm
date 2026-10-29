@@ -26,7 +26,7 @@ const HELP: &str = "Loaf - a Material 3 file manager
 
 Usage: loaf [OPTIONS] [PATH...]
 
-Opens each PATH (a folder, a file to show in its folder, or a file:// URI)
+Opens each PATH (a folder, a file to show in its folder, or a file:// URI or Loaf MTP address)
 in a tab. Without --new-window the paths are handed to a running Loaf.
 
 Options:

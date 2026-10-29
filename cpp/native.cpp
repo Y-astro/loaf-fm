@@ -68,7 +68,7 @@ static QStringList toLocalPaths(const QStringList &items)
 LoafNative::LoafNative(QObject *parent)
     : QObject(parent)
 {
-    QDBusConnection::sessionBus().connect(QStringLiteral("org.kde.kiod6"),
+    QDBusConnection::sessionBus().connect(QStringLiteral("org.kde.kmtpd5"),
         QStringLiteral("/modules/kmtpd"), QStringLiteral("org.kde.kmtp.Daemon"),
         QStringLiteral("devicesChanged"), this, SLOT(notifyMtpDevicesChanged()));
     if (QClipboard *cb = QGuiApplication::clipboard()) {
@@ -311,7 +311,7 @@ void set_application_identity(rust::Str version)
 static QDBusMessage mtpCall(const QString &path, const QString &interface,
                            const QString &method, const QVariantList &arguments = {})
 {
-    auto message = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kiod6"), path, interface, method);
+    auto message = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kmtpd5"), path, interface, method);
     message.setArguments(arguments);
     return QDBusConnection::sessionBus().call(message, QDBus::Block, 1500);
 }
@@ -400,7 +400,7 @@ rust::String list_mtp_directory(rust::Str url)
     QDBusReply<QList<QDBusObjectPath>> reply = mtpCall(QStringLiteral("/modules/kmtpd"),
         QStringLiteral("org.kde.kmtp.Daemon"), QStringLiteral("listDevices"));
     if (!reply.isValid()) {
-        return mtpError(QStringLiteral("KDE MTP daemon is not available"));
+        return mtpError(QStringLiteral("KDE MTP daemon: %1").arg(reply.error().message()));
     }
 
     QDBusObjectPath devicePath;
@@ -479,7 +479,7 @@ rust::String list_mtp_directory(rust::Str url)
     }
 
     // Call getFilesAndFolders on storage with 30000ms timeout
-    auto callMsg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kiod6"),
+    auto callMsg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kmtpd5"),
         targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"), QStringLiteral("getFilesAndFolders"));
     callMsg.setArguments({subPath});
     QDBusMessage callReply = QDBusConnection::sessionBus().call(callMsg, QDBus::Block, 30000);
@@ -683,7 +683,7 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
     }
 
     if (actionStr == QStringLiteral("stat")) {
-        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kiod6"),
+        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"), QStringLiteral("getFileMetadata"));
         msg.setArguments({subPath});
         QDBusMessage reply = QDBusConnection::sessionBus().call(msg, QDBus::Block, 30000);
@@ -731,7 +731,7 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
         }
         targetPath += argStr;
 
-        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kiod6"),
+        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"), QStringLiteral("createFolder"));
         msg.setArguments({targetPath});
         QDBusMessage reply = QDBusConnection::sessionBus().call(msg, QDBus::Block, 30000);
@@ -770,7 +770,7 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
         const QJsonObject targetState = QJsonDocument::fromJson(QByteArray(targetReply.data(), static_cast<qsizetype>(targetReply.size()))).object();
         if (targetState.contains(QStringLiteral("error")) || targetState.value(QStringLiteral("exists")).toBool())
             return mtpError(QStringLiteral("Rename target already exists or could not be checked"));
-        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kiod6"),
+        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"), QStringLiteral("setFileName"));
         msg.setArguments({subPath, argStr});
         QDBusMessage reply = QDBusConnection::sessionBus().call(msg, QDBus::Block, 30000);
@@ -791,7 +791,7 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
             const QJsonObject err{{QStringLiteral("error"), QStringLiteral("Cannot delete storage root")}};
             return toRust(QString::fromUtf8(QJsonDocument(err).toJson(QJsonDocument::Compact)));
         }
-        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kiod6"),
+        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"), QStringLiteral("deleteObject"));
         msg.setArguments({subPath});
         QDBusMessage reply = QDBusConnection::sessionBus().call(msg, QDBus::Block, 30000);
@@ -826,10 +826,10 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
         }
 
         MtpTransferReceiver receiver;
-        bool conn1 = QDBusConnection::sessionBus().connect(QStringLiteral("org.kde.kiod6"),
+        bool conn1 = QDBusConnection::sessionBus().connect(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
             QStringLiteral("copyFinished"), &receiver, SLOT(onCopyFinished(int)));
-        bool conn2 = QDBusConnection::sessionBus().connect(QStringLiteral("org.kde.kiod6"),
+        bool conn2 = QDBusConnection::sessionBus().connect(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
             QStringLiteral("copyProgress"), &receiver, SLOT(onCopyProgress(quint64,quint64)));
 
@@ -841,17 +841,17 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
         }
 
         QDBusUnixFileDescriptor dbusFd(rawFd);
-        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kiod6"),
+        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"), QStringLiteral("getFileToFileDescriptor"));
         msg.setArguments({QVariant::fromValue(dbusFd), subPath});
 
         QDBusMessage reply = QDBusConnection::sessionBus().call(msg, QDBus::Block, 30000);
         if (reply.type() != QDBusMessage::ReplyMessage) {
-            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
                 targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
                 QStringLiteral("copyFinished"), &receiver, SLOT(onCopyFinished(int)));
             if (conn2) {
-                QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+                QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
                     targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
                     QStringLiteral("copyProgress"), &receiver, SLOT(onCopyProgress(quint64,quint64)));
             }
@@ -863,11 +863,11 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
 
         const int ret = reply.arguments().value(0).toInt();
         if (ret != 0) {
-            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
                 targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
                 QStringLiteral("copyFinished"), &receiver, SLOT(onCopyFinished(int)));
             if (conn2) {
-                QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+                QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
                     targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
                     QStringLiteral("copyProgress"), &receiver, SLOT(onCopyProgress(quint64,quint64)));
             }
@@ -893,11 +893,11 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
             loop.exec();
         }
 
-        QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+        QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
             QStringLiteral("copyFinished"), &receiver, SLOT(onCopyFinished(int)));
         if (conn2) {
-            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
                 targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
                 QStringLiteral("copyProgress"), &receiver, SLOT(onCopyProgress(quint64,quint64)));
         }
@@ -945,10 +945,10 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
         }
 
         MtpTransferReceiver receiver;
-        bool conn1 = QDBusConnection::sessionBus().connect(QStringLiteral("org.kde.kiod6"),
+        bool conn1 = QDBusConnection::sessionBus().connect(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
             QStringLiteral("copyFinished"), &receiver, SLOT(onCopyFinished(int)));
-        bool conn2 = QDBusConnection::sessionBus().connect(QStringLiteral("org.kde.kiod6"),
+        bool conn2 = QDBusConnection::sessionBus().connect(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
             QStringLiteral("copyProgress"), &receiver, SLOT(onCopyProgress(quint64,quint64)));
 
@@ -959,17 +959,17 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
         }
 
         QDBusUnixFileDescriptor dbusFd(rawFd);
-        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kiod6"),
+        auto msg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"), QStringLiteral("sendFileFromFileDescriptor"));
         msg.setArguments({QVariant::fromValue(dbusFd), subPath});
 
         QDBusMessage reply = QDBusConnection::sessionBus().call(msg, QDBus::Block, 30000);
         if (reply.type() != QDBusMessage::ReplyMessage) {
-            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
                 targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
                 QStringLiteral("copyFinished"), &receiver, SLOT(onCopyFinished(int)));
             if (conn2) {
-                QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+                QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
                     targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
                     QStringLiteral("copyProgress"), &receiver, SLOT(onCopyProgress(quint64,quint64)));
             }
@@ -980,11 +980,11 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
 
         const int ret = reply.arguments().value(0).toInt();
         if (ret != 0) {
-            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
                 targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
                 QStringLiteral("copyFinished"), &receiver, SLOT(onCopyFinished(int)));
             if (conn2) {
-                QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+                QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
                     targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
                     QStringLiteral("copyProgress"), &receiver, SLOT(onCopyProgress(quint64,quint64)));
             }
@@ -1009,11 +1009,11 @@ rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argum
             loop.exec();
         }
 
-        QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+        QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
             targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
             QStringLiteral("copyFinished"), &receiver, SLOT(onCopyFinished(int)));
         if (conn2) {
-            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kiod6"),
+            QDBusConnection::sessionBus().disconnect(QStringLiteral("org.kde.kmtpd5"),
                 targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"),
                 QStringLiteral("copyProgress"), &receiver, SLOT(onCopyProgress(quint64,quint64)));
         }
