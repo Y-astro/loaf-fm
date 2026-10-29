@@ -1232,7 +1232,12 @@ ApplicationWindow {
                                         return;
                                     var asCopy = (drop.source === dragProxy) ? dragManager.asCopy : (drop.proposedAction === Qt.CopyAction);
                                     drop.accept(asCopy ? Qt.CopyAction : Qt.MoveAction);
-                                    window.handleDrop(paths, dest, asCopy);
+                                    if (dragManager.isRmb) {
+                                        var pt = chipDrop.mapToItem(window.contentItem, drop.x, drop.y);
+                                        rmbDropMenu.showAt(pt.x, pt.y, paths, dest);
+                                    } else {
+                                        window.handleDrop(paths, dest, asCopy);
+                                    }
                                 }
                             }
 
@@ -2723,12 +2728,19 @@ ApplicationWindow {
         function showAt(px, py, paths, dest) {
             dropPaths = paths;
             dropDest = dest;
-            model = [
-                { text: qsTr("Copy Here"), icon: "copy", action: function() { window.transfer(rmbDropMenu.dropPaths, rmbDropMenu.dropDest, "copy"); } },
-                { text: qsTr("Move Here"), icon: "arrows-out-cardinal", action: function() { window.transfer(rmbDropMenu.dropPaths, rmbDropMenu.dropDest, "move"); } },
-                { text: qsTr("Link Here"), icon: "link", action: function() { core.transfer(JSON.stringify(rmbDropMenu.dropPaths), rmbDropMenu.dropDest, "link", "rename"); } },
-                { text: qsTr("Cancel"), icon: "x", danger: true, separatorBefore: true, action: function() {} }
-            ];
+            if (dest === "trash") {
+                model = [
+                    { text: qsTr("Move to Trash"), icon: "trash", danger: true, action: function() { core.trash_items(JSON.stringify(rmbDropMenu.dropPaths)); } },
+                    { text: qsTr("Cancel"), icon: "x", separatorBefore: true, action: function() {} }
+                ];
+            } else {
+                model = [
+                    { text: qsTr("Copy Here"), icon: "copy", action: function() { window.transfer(rmbDropMenu.dropPaths, rmbDropMenu.dropDest, "copy"); } },
+                    { text: qsTr("Move Here"), icon: "arrows-out-cardinal", action: function() { window.transfer(rmbDropMenu.dropPaths, rmbDropMenu.dropDest, "move"); } },
+                    { text: qsTr("Link Here"), icon: "link", action: function() { core.transfer(JSON.stringify(rmbDropMenu.dropPaths), rmbDropMenu.dropDest, "link", "rename"); } },
+                    { text: qsTr("Cancel"), icon: "x", danger: true, separatorBefore: true, action: function() {} }
+                ];
+            }
             openAt(px, py);
         }
     }
