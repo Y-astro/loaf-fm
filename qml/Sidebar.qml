@@ -298,8 +298,15 @@ Rectangle {
                         if (entry.isDevice) rail.driveMenuRequested(entry.modelData.drive, x, y);
                         else rail.placeMenuRequested(entry.modelData, x, y);
                     }
-                    onFilesDropped: function(paths, asCopy) {
-                        if (dropPath.length > 0) window.handleDrop(paths, dropPath, asCopy);
+                    onFilesDropped: function(paths, asCopy, d) {
+                        if (dropPath.length > 0) {
+                            if (dragManager.isRmb) {
+                                var pt = mapToItem(window.contentItem, d.x, d.y);
+                                rmbDropMenu.showAt(pt.x, pt.y, paths, dropPath);
+                            } else {
+                                window.handleDrop(paths, dropPath, asCopy);
+                            }
+                        }
                     }
                 }
             }
@@ -361,8 +368,13 @@ Rectangle {
                 onClicked: rail.placeClicked(rail.trashPlace, false)
                 onMiddleClicked: rail.placeClicked(rail.trashPlace, true)
                 onMenuRequested: function(x, y) { rail.placeMenuRequested(rail.trashPlace, x, y); }
-                onFilesDropped: function(paths, asCopy) {
-                    core.trash_items(JSON.stringify(paths));
+                onFilesDropped: function(paths, asCopy, d) {
+                    if (dragManager.isRmb) {
+                        var pt = mapToItem(window.contentItem, d.x, d.y);
+                        rmbDropMenu.showAt(pt.x, pt.y, paths, "trash");
+                    } else {
+                        core.trash_items(JSON.stringify(paths));
+                    }
                 }
             }
         }
@@ -396,7 +408,7 @@ Rectangle {
         signal clicked()
         signal middleClicked()
         signal menuRequested(real x, real y)
-        signal filesDropped(var paths, bool asCopy)
+        signal filesDropped(var paths, bool asCopy, var dropEvent)
 
         implicitHeight: 44
         height: 44
@@ -497,7 +509,7 @@ Rectangle {
                     return;
                 var asCopy = (d.source === dragProxy) ? dragManager.asCopy : (d.proposedAction === Qt.CopyAction);
                 d.accept(asCopy ? Qt.CopyAction : Qt.MoveAction);
-                btn.filesDropped(paths, asCopy);
+                btn.filesDropped(paths, asCopy, d);
             }
         }
 

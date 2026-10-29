@@ -3,6 +3,7 @@
 result
 .direnv/
 tmp/
+tests/
 
 # Editors
 .vscode/
@@ -25,5 +26,3 @@ packaging/dist/*.deb
 # Media showcase
 assets/showcase/
 showcase/
-
-index.html

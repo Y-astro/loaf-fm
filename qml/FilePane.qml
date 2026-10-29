@@ -322,8 +322,9 @@ Item {
             ? dragManager.asCopy
             : ((drop.proposedAction === Qt.CopyAction) || !(drop.supportedActions & Qt.MoveAction));
         drop.accept(asCopy ? Qt.CopyAction : Qt.MoveAction);
-        if (dragManager.isRmb && mouseItem) {
-            var pt = mouseItem.mapToItem(window.contentItem, drop.x, drop.y);
+        if (dragManager.isRmb) {
+            var pt = mouseItem ? mouseItem.mapToItem(window.contentItem, drop.x, drop.y)
+                               : Qt.point(drop.x, drop.y);
             rmbDropMenu.showAt(pt.x, pt.y, paths, destPath);
         } else {
             window.handleDrop(paths, destPath, asCopy);
@@ -751,12 +752,13 @@ Item {
                 }
             }
             DropArea {
+                id: emptyDrop
                 anchors.fill: parent
                 keys: ["text/uri-list"]
                 onDropped: function(drop) {
                     if (dragManager.hoverTarget.length > 0 || pane.dropTargetDir().length === 0)
                         return;
-                    pane.handleDropOn(drop, pane.dropTargetDir(), null);
+                    pane.handleDropOn(drop, pane.dropTargetDir(), emptyDrop);
                 }
             }
             GridView {
@@ -844,6 +846,7 @@ Item {
 
                     property real sx: 0
                     property real sy: 0
+                    property real pointerY: 0
                     property bool active: false
                     property bool justDragged: false
                     property var base: ({})
@@ -877,12 +880,14 @@ Item {
                         if (mouse.button !== Qt.LeftButton || theme.dragAction !== "select")
                             return;
                         sx = mouse.x; sy = mouse.y;
+                        pointerY = mouse.y - gridView.contentY;
                         active = false;
                         base = (mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier)) ? Object.assign({}, pane.selection) : {};
                     }
                     onPositionChanged: function(mouse) {
                         if (theme.dragAction !== "select" || !(mouse.buttons & Qt.LeftButton))
                             return;
+                        pointerY = mouse.y - gridView.contentY;
                         if (!active && (Math.abs(mouse.x - sx) + Math.abs(mouse.y - sy)) > 6) {
                             active = true;
                             band.visible = true;
@@ -916,7 +921,7 @@ Item {
                         repeat: true
                         running: bgMouse.active
                         onTriggered: {
-                            var my = bgMouse.mouseY;
+                            var my = gridView.contentY + bgMouse.pointerY;
                             var top = gridView.contentY, bottom = top + gridView.height;
                             var maxY = Math.max(0, gridView.contentHeight - gridView.height);
                             if (my < top + 32 && gridView.contentY > 0)
@@ -925,7 +930,7 @@ Item {
                                 gridView.contentY = Math.min(maxY, gridView.contentY + 12);
                             else
                                 return;
-                            bgMouse.updateBand(bgMouse.mouseX, bgMouse.mouseY);
+                            bgMouse.updateBand(bgMouse.mouseX, gridView.contentY + bgMouse.pointerY);
                         }
                     }
                 }
@@ -1138,6 +1143,7 @@ Item {
                     MouseArea {
                         id: cardMouse
                         anchors.fill: parent
+                        anchors.margins: 4
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
@@ -1318,22 +1324,127 @@ Item {
                     acceptedModifiers: Qt.ControlModifier
                     onWheel: function(event) { theme.stepZoom(event.angleDelta.y > 0 ? 1 : -1); }
                 }
+
+                // Rubber band selection.
+                Rectangle {
+                    id: listBand
+                    parent: listView.contentItem
+                    z: 100
+                    visible: false
+                    color: Qt.rgba(theme.primary.r, theme.primary.g, theme.primary.b, theme.isDark ? 0.22 : 0.16)
+                    border.color: theme.primary
+                    border.width: 1.5
+                    radius: theme.radiusM
+                }
+
+                MouseArea {
+                    id: listBgMouse
+                    parent: listView.contentItem
+                    width: Math.max(listView.width, listView.contentWidth)
+                    height: Math.max(listView.height + listView.contentY, listView.contentHeight)
+                    z: -1
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    preventStealing: theme.dragAction === "select"
+
+                    property real sx: 0
+                    property real sy: 0
+                    property real pointerY: 0
+                    property bool active: false
+                    property bool justDragged: false
+                    property var base: ({})
+
+                    function updateBand(mx, my) {
+                        var x = Math.min(sx, mx), y = Math.min(sy, my);
+                        var w = Math.abs(mx - sx), h = Math.abs(my - sy);
+                        listBand.x = x; listBand.y = y; listBand.width = w; listBand.height = h;
+                        var rowH = Math.round(38 * Math.max(0.85, Math.min(1.3, pane.zoom)));
+                        var pitch = rowH + listView.spacing;
+                        var sel = Object.assign({}, base);
+                        var count = paneEngine.item_count;
+                        var r1 = Math.max(0, Math.floor((y - listView.originY) / pitch));
+                        var r2 = Math.min(count - 1, Math.floor((y + h - listView.originY) / pitch));
+                        for (var r = r1; r <= r2; ++r) {
+                            var t = listView.originY + r * pitch;
+                            if (x < listView.width && x + w >= 0 && y + h > t && y < t + rowH)
+                                sel[paneEngine.path_at(r)] = true;
+                        }
+                        pane.selection = sel;
+                    }
+
+                    onPressed: function(mouse) {
+                        pane.activated();
+                        window.defocusInputs();
+                        if (mouse.button !== Qt.LeftButton || theme.dragAction !== "select")
+                            return;
+                        sx = mouse.x; sy = mouse.y;
+                        pointerY = mouse.y - listView.contentY;
+                        active = false;
+                        base = (mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier)) ? Object.assign({}, pane.selection) : {};
+                    }
+                    onPositionChanged: function(mouse) {
+                        if (theme.dragAction !== "select" || !(mouse.buttons & Qt.LeftButton))
+                            return;
+                        pointerY = mouse.y - listView.contentY;
+                        if (!active && (Math.abs(mouse.x - sx) + Math.abs(mouse.y - sy)) > 6) {
+                            active = true;
+                            listBand.visible = true;
+                        }
+                        if (active)
+                            updateBand(mouse.x, mouse.y);
+                    }
+                    onReleased: {
+                        if (active) {
+                            active = false;
+                            listBand.visible = false;
+                            justDragged = true;
+                            resetListDragged.restart();
+                        }
+                    }
+                    onCanceled: { active = false; listBand.visible = false; }
+                    onClicked: function(mouse) {
+                        if (justDragged)
+                            return;
+                        if (mouse.button === Qt.RightButton) {
+                            var pt = mapToItem(window.contentItem, mouse.x, mouse.y);
+                            window.openEmptyMenu(pane, pt.x, pt.y);
+                        } else {
+                            var index = listView.indexAt(mouse.x, mouse.y);
+                            if (index >= 0)
+                                pane.selectRow(index, !!(mouse.modifiers & Qt.ControlModifier), !!(mouse.modifiers & Qt.ShiftModifier));
+                            else
+                                pane.clearSelection();
+                        }
+                    }
+                    onDoubleClicked: function(mouse) {
+                        var index = listView.indexAt(mouse.x, mouse.y);
+                        if (mouse.button === Qt.LeftButton && index >= 0)
+                            pane.openRow(index);
+                    }
+                    Timer { id: resetListDragged; interval: 60; onTriggered: listBgMouse.justDragged = false }
+                    // Scroll while dragging the band past the edges.
+                    Timer {
+                        interval: 20
+                        repeat: true
+                        running: listBgMouse.active
+                        onTriggered: {
+                            var my = listView.contentY + listBgMouse.pointerY;
+                            var top = listView.contentY, bottom = top + listView.height;
+                            var minY = listView.originY;
+                            var maxY = minY + Math.max(0, listView.contentHeight - listView.height);
+                            if (my < top + 32 && listView.contentY > minY)
+                                listView.contentY = Math.max(minY, listView.contentY - 12);
+                            else if (my > bottom - 32 && listView.contentY < maxY)
+                                listView.contentY = Math.min(maxY, listView.contentY + 12);
+                            else
+                                return;
+                            listBgMouse.updateBand(listBgMouse.mouseX, listView.contentY + listBgMouse.pointerY);
+                        }
+                    }
+                }
+
                 footer: Item {
                     width: listView.width
                     height: 80
-                    MouseArea {
-                        anchors.fill: parent
-                        acceptedButtons: Qt.LeftButton | Qt.RightButton
-                        onPressed: { pane.activated(); window.defocusInputs(); }
-                        onClicked: function(mouse) {
-                            if (mouse.button === Qt.RightButton) {
-                                var pt = mapToItem(window.contentItem, mouse.x, mouse.y);
-                                window.openEmptyMenu(pane, pt.x, pt.y);
-                            } else {
-                                pane.clearSelection();
-                            }
-                        }
-                    }
                 }
 
                 delegate: Item {
@@ -1437,6 +1548,7 @@ Item {
                             }
 
                             Loader {
+                                id: listNameLoader
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 26
                                 sourceComponent: pane.renamingPath === row.path ? listRename : listName
@@ -1526,6 +1638,7 @@ Item {
                     MouseArea {
                         id: rowMouse
                         anchors.fill: parent
+                        anchors.margins: 2
                         hoverEnabled: true
                         acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
                         cursorShape: Qt.PointingHandCursor
@@ -1536,6 +1649,15 @@ Item {
                         property bool dragging: false
 
                         onPressed: function(mouse) {
+                            // Keep file dragging on the icon/name. Empty space
+                            // in a row belongs to the background selection box.
+                            var nameWidth = listNameLoader.item ? Math.min(listNameLoader.width, listNameLoader.item.implicitWidth) : listNameLoader.width;
+                            var nameEnd = listNameLoader.mapToItem(rowMouse, nameWidth, 0).x;
+                            if (mouse.button === Qt.LeftButton && theme.dragAction === "select"
+                                    && pane.renamingPath !== row.path && mouse.x > nameEnd + 8) {
+                                mouse.accepted = false;
+                                return;
+                            }
                             pane.activated();
                             window.defocusInputs();
                             pressPt = Qt.point(mouse.x, mouse.y);
