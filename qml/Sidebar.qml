@@ -258,7 +258,7 @@ Rectangle {
             model: rail.entries
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; width: 6 }
 
-            onContentYChanged: rail.updateHighlight()
+            onContentYChanged: Qt.callLater(rail.updateHighlight)
             onCountChanged: Qt.callLater(rail.updateHighlight)
             Component.onCompleted: Qt.callLater(rail.updateHighlight)
 
