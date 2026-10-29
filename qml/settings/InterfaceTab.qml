@@ -229,48 +229,22 @@ ColumnLayout {
             }
         }
 
-        // Custom icon theme list if "custom" is active
-        Flow {
+        SettingRow {
             visible: theme.showExperimentalIcons && theme.iconSource === "custom" && root.matchIconStyle
-            Layout.fillWidth: true
-            spacing: 8
+            icon: "folder-simple"
+            title: qsTr("Icon theme")
+            subtitle: qsTr("Any icon theme installed on this system")
 
-            Repeater {
-                model: (theme.iconSource === "custom" && typeof core !== "undefined" && core)
-                    ? JSON.parse(core.icon_themes_json() || "[]") : []
-
-                delegate: Item {
-                    width: themeLabel.implicitWidth + 28
-                    height: 34
-
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: theme.radiusFull
-                        color: theme.customIconTheme === modelData.id ? theme.primaryContainer : theme.surfaceContainerHigh
-                        border.color: theme.primary
-                        border.width: theme.customIconTheme === modelData.id ? 2 : 0
-
-                        scale: tMouse.pressed ? 0.94 : (tMouse.containsMouse ? 1.04 : 1.0)
-                        Behavior on scale { enabled: theme.animate; SpringAnimation { spring: 3.5; damping: 0.3 } }
-
-                        Text {
-                            id: themeLabel
-                            anchors.centerIn: parent
-                            text: modelData.name
-                            color: theme.customIconTheme === modelData.id ? theme.primaryContainerFg : theme.textMain
-                            font.pixelSize: theme.fs(11)
-                            font.bold: theme.customIconTheme === modelData.id
-                        }
-                    }
-
-                    MouseArea {
-                        id: tMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: theme.customIconTheme = modelData.id
-                    }
-                }
+            LoafSelect {
+                Layout.preferredWidth: (typeof settingsView !== "undefined" && settingsView.isCompact) ? 180 : 260
+                accessibleName: qsTr("Icon theme")
+                options: (theme.iconSource === "custom" && typeof core !== "undefined" && core)
+                    ? JSON.parse(core.icon_themes_json() || "[]").map(function (t) {
+                        return { value: t.id, label: t.name, iconUrl: core.resolve_icon(t.id, "folder") };
+                    })
+                    : []
+                value: theme.customIconTheme
+                onSelected: function (v) { theme.customIconTheme = v; }
             }
         }
 

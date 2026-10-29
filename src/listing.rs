@@ -6,10 +6,14 @@ use std::collections::HashSet;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub name: String,
+    /// Lowercase copy of `name`. The as-you-type filter compares against
+    /// this, so retyping in the filter box never re-lowercases every name.
+    pub name_lower: String,
     /// Absolute path (for search results the item may live anywhere).
     pub path: String,
     /// Folder, or a symlink pointing at one (it opens like a folder).
@@ -116,6 +120,7 @@ pub fn entry_for(path: &Path, name: &str, hidden_names: &HashSet<String>) -> Opt
     let (icon, system_icon, category, thumbable) = classify(name, is_dir);
     Some(Entry {
         name: name.to_string(),
+        name_lower: name.to_lowercase(),
         path: path.to_string_lossy().to_string(),
         is_dir,
         is_symlink,
@@ -150,39 +155,53 @@ pub fn scan(dir: &Path, cancelled: &dyn Fn() -> bool) -> std::io::Result<Vec<Ent
 }
 
 /// Natural, case-insensitive comparison: "file2" < "file10", "a" == "A".
+///
+/// No allocations: digit runs are compared as byte slices with the leading
+/// zeros stripped, which is exactly what the old `String` copies produced.
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let (mut ai, mut bi) = (a.chars().peekable(), b.chars().peekable());
+    // Peek carries the byte index, so digit runs can be sliced for free.
+    let mut ai = a.char_indices().peekable();
+    let mut bi = b.char_indices().peekable();
     loop {
         match (ai.peek().copied(), bi.peek().copied()) {
             (None, None) => return a.cmp(b),
             (None, Some(_)) => return Ordering::Less,
             (Some(_), None) => return Ordering::Greater,
-            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
-                let mut na = String::new();
-                while let Some(c) = ai.peek().copied().filter(|c| c.is_ascii_digit()) {
-                    na.push(c);
+            (Some((_, x)), Some((_, y))) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let (sa, _) = ai.next().unwrap();
+                let (sb, _) = bi.next().unwrap();
+                // Consume both runs; ASCII digits are one byte each, so the
+                // next byte index is exactly where the run ends.
+                let (mut ea, mut eb) = (a.len(), b.len());
+                while let Some(&(idx, c)) = ai.peek() {
+                    if !c.is_ascii_digit() {
+                        ea = idx;
+                        break;
+                    }
                     ai.next();
                 }
-                let mut nb = String::new();
-                while let Some(c) = bi.peek().copied().filter(|c| c.is_ascii_digit()) {
-                    nb.push(c);
+                while let Some(&(idx, c)) = bi.peek() {
+                    if !c.is_ascii_digit() {
+                        eb = idx;
+                        break;
+                    }
                     bi.next();
                 }
-                let ta = na.trim_start_matches('0');
-                let tb = nb.trim_start_matches('0');
+                let ta = a[sa..ea].trim_start_matches('0');
+                let tb = b[sb..eb].trim_start_matches('0');
                 let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb));
                 if ord != Ordering::Equal {
                     return ord;
                 }
             }
-            (Some(x), Some(y)) => {
+            (_, _) => {
+                // Digits absent or equal runs: compare one character each.
+                let ((_, x), (_, y)) = (ai.next().unwrap(), bi.next().unwrap());
                 let lx = x.to_lowercase().next().unwrap_or(x);
                 let ly = y.to_lowercase().next().unwrap_or(y);
                 if lx != ly {
                     return lx.cmp(&ly);
                 }
-                ai.next();
-                bi.next();
             }
         }
     }
@@ -226,36 +245,60 @@ pub fn compare(a: &Entry, b: &Entry, spec: &SortSpec) -> Ordering {
     ord.then_with(|| a.path.cmp(&b.path))
 }
 
-pub fn sort(entries: &mut [Entry], spec: &SortSpec) {
-    entries.sort_by(|a, b| compare(a, b, spec));
+pub fn sort<T: EntryLike>(entries: &mut [T], spec: &SortSpec) {
+    entries.sort_by(|a, b| compare(a.as_entry(), b.as_entry(), spec));
+}
+
+/// Compared as an [Entry] regardless of how it is stored (owned or shared
+/// behind an `Arc`, which keeps model refilters from re-cloning every row).
+pub trait EntryLike {
+    fn as_entry(&self) -> &Entry;
+}
+
+impl EntryLike for Entry {
+    fn as_entry(&self) -> &Entry {
+        self
+    }
+}
+
+impl EntryLike for std::sync::Arc<Entry> {
+    fn as_entry(&self) -> &Entry {
+        self.as_ref()
+    }
+}
+
+/// Filter text as compared against names: trimmed and lowercased once, so
+/// listing thousands of entries does not re-lowercase per entry.
+pub fn lower_filter(filter: &str) -> String {
+    filter.trim().to_lowercase()
 }
 
 /// Which entries are shown: hidden files only when asked, unless the
-/// filter text starts with a dot (so ".bashrc" can be found, issue #12).
-pub fn visible(e: &Entry, show_hidden: bool, filter: &str) -> bool {
-    let f = filter.trim().to_lowercase();
-    if e.is_hidden && !show_hidden && !f.starts_with('.') {
+/// filter starts with a dot (so ".bashrc" can be found, issue #12).
+/// `filter_lower` comes from `lower_filter`.
+pub fn visible(e: &Entry, show_hidden: bool, filter_lower: &str) -> bool {
+    if e.is_hidden && !show_hidden && !filter_lower.starts_with('.') {
         return false;
     }
-    f.is_empty() || e.name.to_lowercase().contains(&f)
+    filter_lower.is_empty() || e.name_lower.contains(filter_lower)
 }
 
 /// One step that turns the old list into the new one.
 #[derive(Debug, PartialEq)]
-pub enum Change {
+pub enum Change<T> {
     Remove { at: usize, count: usize },
-    Insert { at: usize, items: Vec<Entry> },
-    Update { at: usize, item: Entry },
+    Insert { at: usize, items: Vec<T> },
+    Update { at: usize, item: T },
 }
 
 /// Edit script from `old` to `new` (both sorted the same way, keyed by
 /// path). Applying the changes in order to `old` yields `new`.
-pub fn diff(old: &[Entry], new: &[Entry]) -> Vec<Change> {
-    let new_keys: HashSet<&str> = new.iter().map(|e| e.path.as_str()).collect();
-    let mut pending_old: HashSet<&str> = old.iter().map(|e| e.path.as_str()).collect();
-    let mut changes: Vec<Change> = Vec::new();
+pub fn diff<T: EntryLike + Clone + PartialEq>(old: &[T], new: &[T]) -> Vec<Change<T>> {
+    let new_keys: HashSet<&str> = new.iter().map(|e| e.as_entry().path.as_str()).collect();
+    let mut pending_old: HashSet<&str> = old.iter().map(|e| e.as_entry().path.as_str()).collect();
+    let mut changes: Vec<Change<T>> = Vec::new();
     let (mut i, mut j, mut k) = (0usize, 0usize, 0usize);
-    let push_remove = |changes: &mut Vec<Change>, at: usize| {
+    let push_remove = |changes: &mut Vec<Change<T>>, at: usize| {
         if let Some(Change::Remove { at: a, count }) = changes.last_mut() {
             if *a == at {
                 *count += 1;
@@ -265,22 +308,25 @@ pub fn diff(old: &[Entry], new: &[Entry]) -> Vec<Change> {
         changes.push(Change::Remove { at, count: 1 });
     };
     while i < old.len() || j < new.len() {
-        if i < old.len() && j < new.len() && old[i].path == new[j].path {
-            if old[i] != new[j] {
-                changes.push(Change::Update { at: k, item: new[j].clone() });
+        if i < old.len() && j < new.len() && old[i].as_entry().path == new[j].as_entry().path {
+            if old[i].as_entry() != new[j].as_entry() {
+                changes.push(Change::Update {
+                    at: k,
+                    item: new[j].clone(),
+                });
             }
-            pending_old.remove(old[i].path.as_str());
+            pending_old.remove(old[i].as_entry().path.as_str());
             i += 1;
             j += 1;
             k += 1;
         } else if i < old.len()
             && (j >= new.len()
-                || !new_keys.contains(old[i].path.as_str())
+                || !new_keys.contains(old[i].as_entry().path.as_str())
                 // Both lists hold new[j] and old[i], just in another order:
                 // drop old[i] here; it is inserted again at its new spot.
-                || pending_old.contains(new[j].path.as_str()))
+                || pending_old.contains(new[j].as_entry().path.as_str()))
         {
-            pending_old.remove(old[i].path.as_str());
+            pending_old.remove(old[i].as_entry().path.as_str());
             push_remove(&mut changes, k);
             i += 1;
         } else {
@@ -303,7 +349,7 @@ pub fn diff(old: &[Entry], new: &[Entry]) -> Vec<Change> {
 }
 
 /// Applies `changes` to `list` (used by tests and by the model mirror).
-pub fn apply(list: &mut Vec<Entry>, changes: &[Change]) {
+pub fn apply<T: EntryLike + Clone>(list: &mut Vec<T>, changes: &[Change<T>]) {
     for c in changes {
         match c {
             Change::Remove { at, count } => {
@@ -337,6 +383,37 @@ pub fn disambiguate(entries: &mut [Entry]) {
     }
 }
 
+/// [`disambiguate`] for shared entries. Search results arrive in batches, so
+/// only names that just became ambiguous are rebuilt; the rest keep their
+/// `Arc` (previously every batch re-copying every entry).
+pub fn disambiguate_shared(entries: &mut [Arc<Entry>]) {
+    // Owned keys: the map must not borrow into `entries` — later batches
+    // replace shared entries in place.
+    let mut counts = std::collections::HashMap::<String, usize>::new();
+    for e in entries.iter() {
+        *counts.entry(e.name.clone()).or_insert(0usize) += 1;
+    }
+    for e in entries.iter_mut() {
+        if counts.get(&e.name).copied().unwrap_or(0) <= 1 {
+            continue;
+        }
+        // Already rewritten ("parent/name" always has a slash; plain names
+        // cannot contain one), so this batch adds nothing to do.
+        if e.display_name != e.name {
+            continue;
+        }
+        let parent = Path::new(&e.path)
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        *e = Arc::new(Entry {
+            display_name: format!("{}/{}", parent, e.name),
+            ..(**e).clone()
+        });
+    }
+}
+
 /// Helper for building entries for arbitrary paths (search, recent, starred).
 pub fn entries_for_paths(paths: &[PathBuf]) -> Vec<Entry> {
     let empty = HashSet::new();
@@ -359,6 +436,7 @@ mod tests {
         let (icon, system_icon, category, thumbable) = classify(name, is_dir);
         Entry {
             name: name.into(),
+            name_lower: name.to_lowercase(),
             path: format!("/d/{}", name),
             is_dir,
             is_symlink: false,
@@ -460,6 +538,53 @@ mod tests {
             let new = pick(&mut rnd);
             check_diff(old, new);
         }
+    }
+
+    #[test]
+    fn diff_shared_rows_match_owned() {
+        // The model stores shared entries; the diff script over `Arc`s must
+        // behave exactly like the plain-Entry one.
+        let old: Vec<Entry> = vec![e("a", false, 1), e("b", false, 2), e("c", false, 3)];
+        let new: Vec<Entry> = vec![
+            e("a", false, 1),
+            e("b", false, 9),
+            e("d", false, 4),
+            e("c", false, 3),
+        ];
+        let shared = |v: &[Entry]| -> Vec<Arc<Entry>> { v.iter().cloned().map(Arc::new).collect() };
+        assert_eq!(
+            format!("{:?}", diff(&shared(&old), &shared(&new))),
+            format!("{:?}", diff(&old, &new))
+        );
+        let mut cur = shared(&old);
+        apply(&mut cur, &diff(&shared(&old), &shared(&new)));
+        let plain: Vec<Entry> = cur.iter().map(|a| a.as_ref().clone()).collect();
+        assert_eq!(plain, new);
+    }
+
+    #[test]
+    fn disambiguate_shared_streams() {
+        // First batch: two different files. Second batch: a duplicate name
+        // arrives; both must end up as "parent/name", and batch 1's entry
+        // (already prefixed) must keep its detail path intact.
+        let mut a = e("report", false, 1);
+        a.path = "/home/x/report".into();
+        let mut b = e("notes", false, 2);
+        b.path = "/home/y/notes".into();
+        let mut all = vec![Arc::new(a), Arc::new(b)];
+        disambiguate_shared(&mut all);
+        assert_eq!(all[0].display_name, "report");
+        assert_eq!(all[1].display_name, "notes");
+
+        let mut c = e("report", false, 3);
+        c.path = "/home/z/report".into();
+        all.push(Arc::new(c));
+        disambiguate_shared(&mut all);
+        assert_eq!(all[0].display_name, "x/report");
+        assert_eq!(all[2].display_name, "z/report");
+        assert_eq!(all[0].name_lower, "report");
+        // Names stayed unambiguous untouched.
+        assert_eq!(all[1].display_name, "notes");
     }
 
     #[test]

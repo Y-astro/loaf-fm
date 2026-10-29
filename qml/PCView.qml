@@ -7,7 +7,7 @@ import app.loaf
 // customizable sections (places, frequent, internal storage summary + drives,
 // external drives). Drive rows are rendered with the shared DriveCard; all
 // controls come from the shared component library (SectionHeader, LoafButton,
-// LoafCard, UsageBar, LoafMenu, LoafTextPrompt).
+// LoafShape, UsageBar, LoafMenu, LoafTextPrompt).
 Item {
     id: pcView
 
@@ -171,6 +171,18 @@ Item {
             return (b / 1024).toFixed(0) + " KB";
         return "0 B";
     }
+    // Places cycle through expressive shapes and the three tonal containers.
+    readonly property var placeShapes: ["cookie9", "clover4", "sunny", "cookie6", "flower", "burst", "clover8", "cookie4", "cookie12"]
+    function placeShape(i) {
+        return pcView.placeShapes[i % pcView.placeShapes.length];
+    }
+    function placeContainer(i) {
+        return [theme.primaryContainer, theme.secondaryContainer, theme.tertiaryContainer][i % 3];
+    }
+    function placeOnContainer(i) {
+        return [theme.primaryContainerFg, theme.secondaryContainerFg, theme.textMain][i % 3];
+    }
+
     function columnCount(minCellWidth) {
         return Math.max(1, Math.floor(pcFlick.width / minCellWidth));
     }
@@ -303,35 +315,111 @@ Item {
             id: pcCol
             width: pcFlick.width
             spacing: 24
+            // Hero: the device in a large expressive shape, a short storage
+            // summary and a few decorative shapes.
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 12
+                Layout.topMargin: 4
+                spacing: 20
 
-                Rectangle {
-                    Layout.preferredWidth: 44
-                    Layout.preferredHeight: 44
-                    radius: 22
-                    color: theme.primaryContainer
+                Item {
+                    Layout.preferredWidth: 104
+                    Layout.preferredHeight: 104
+
+                    LoafShape {
+                        anchors.fill: parent
+                        shape: "cookie12"
+                        color: theme.primaryContainer
+                        rotation: heroMouse.containsMouse ? 30 : 0
+                        Behavior on rotation { enabled: theme.animate; SpringAnimation { spring: 2.0; damping: 0.25 } }
+                    }
+                    LoafShape {
+                        width: 30; height: 30
+                        x: parent.width - 22; y: -4
+                        shape: "sunny"
+                        color: theme.tertiaryContainer
+                        rotation: heroMouse.containsMouse ? -45 : 0
+                        Behavior on rotation { enabled: theme.animate; SpringAnimation { spring: 2.0; damping: 0.25 } }
+                    }
+                    Rectangle {
+                        width: 14; height: 14; radius: 7
+                        x: 2; y: parent.height - 16
+                        color: theme.secondaryContainer
+                    }
                     LoafIcon {
                         anchors.centerIn: parent
                         name: core.device_type === "laptop" ? "laptop" : "desktop"
-                        size: 22
+                        size: 44
                         color: theme.primaryContainerFg
+                    }
+                    MouseArea {
+                        id: heroMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        acceptedButtons: Qt.NoButton
                     }
                 }
 
-                Text {
-                    text: core.hostname || qsTr("This PC")
-                    color: theme.textMain
-                    font.pixelSize: theme.fs(26)
-                    font.bold: true
-                    font.letterSpacing: -0.5
+                ColumnLayout {
                     Layout.fillWidth: true
-                    elide: Text.ElideRight
+                    spacing: 4
+
+                    Text {
+                        text: core.hostname || qsTr("This PC")
+                        color: theme.textMain
+                        font.pixelSize: theme.fs(32)
+                        font.bold: true
+                        font.letterSpacing: -0.8
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        text: {
+                            var kind = core.device_type === "laptop" ? qsTr("Laptop") : qsTr("Desktop");
+                            if (pcView.totalInternalBytes <= 0)
+                                return kind;
+                            return kind + "  ·  " + qsTr("%1 free of %2")
+                                .arg(pcView.formatBytes(pcView.freeInternalBytes))
+                                .arg(pcView.formatBytes(pcView.totalInternalBytes));
+                        }
+                        color: theme.textMuted
+                        font.pixelSize: theme.fs(14)
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                    }
                 }
+
+                // Decorative cluster; hidden on narrow windows.
+                Item {
+                    visible: pcFlick.width > 720
+                    Layout.preferredWidth: 132
+                    Layout.preferredHeight: 96
+
+                    LoafShape {
+                        width: 72; height: 72
+                        x: 0; y: 14
+                        shape: "flower"
+                        color: theme.tertiaryContainer
+                        rotation: 12
+                    }
+                    LoafShape {
+                        width: 48; height: 48
+                        x: 64; y: 0
+                        shape: "clover4"
+                        color: theme.primaryContainer
+                        rotation: 45
+                    }
+                    Rectangle {
+                        width: 18; height: 18; radius: 9
+                        x: 100; y: 66
+                        color: theme.primary
+                    }
+                }
+
                 LoafButton {
                     id: customizeBtn
                     visible: pcView.customizationEnabled
+                    Layout.alignment: Qt.AlignTop
                     text: pcView.customizing ? qsTr("Done") : qsTr("Customize")
                     icon: pcView.customizing ? "check" : "sliders-horizontal"
                     variant: pcView.customizing ? "tonal" : "outlined"
@@ -420,46 +508,59 @@ Item {
                     }
                     Item {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: sectionDelegate.secView === "carousel" ? 54 : placesGrid.implicitHeight
+                        Layout.preferredHeight: sectionDelegate.secView === "carousel" ? 60 : placesGrid.implicitHeight
                         visible: sectionDelegate.secVisible && sectionDelegate.secKey === "places"
 
                         GridLayout {
                             id: placesGrid
                             visible: sectionDelegate.secView !== "carousel"
                             anchors.fill: parent
-                            columns: pcView.columnCount(170)
-                            columnSpacing: 10
-                            rowSpacing: 10
+                            columns: pcView.columnCount(150)
+                            columnSpacing: 12
+                            rowSpacing: 12
 
                             Repeater {
                                 model: pcView.quickPlaces
 
                                 delegate: Rectangle {
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: 52
-                                    radius: theme.radiusL
-                                    color: theme.surfaceContainer
-                                    opacity: placeMouse.containsMouse ? 1.0 : 0.85
-                                    scale: placeMouse.pressed ? 0.96 : (placeMouse.containsMouse ? 1.02 : 1.0)
-                                    Behavior on opacity { enabled: theme.animate; NumberAnimation { duration: theme.durationFast } }
+                                    Layout.preferredHeight: 116
+                                    radius: theme.radiusXl
+                                    color: placeMouse.containsMouse ? theme.surfaceContainerHigh : theme.surfaceContainer
+                                    scale: placeMouse.pressed ? 0.95 : (placeMouse.containsMouse ? 1.02 : 1.0)
+                                    Behavior on color { enabled: theme.animate; ColorAnimation { duration: theme.durationFast } }
                                     Behavior on scale { enabled: theme.animate; SpringAnimation { spring: 3.5; damping: 0.32 } }
 
-                                    RowLayout {
-                                        anchors.fill: parent
-                                        anchors.leftMargin: 14
-                                        anchors.rightMargin: 14
+                                    ColumnLayout {
+                                        anchors.centerIn: parent
+                                        width: parent.width - 24
                                         spacing: 10
 
-                                        LoafIcon {
-                                            name: modelData.icon
-                                            size: 20
-                                            color: theme.primary
+                                        Item {
+                                            Layout.alignment: Qt.AlignHCenter
+                                            Layout.preferredWidth: 56
+                                            Layout.preferredHeight: 56
+
+                                            LoafShape {
+                                                anchors.fill: parent
+                                                shape: pcView.placeShape(index)
+                                                color: pcView.placeContainer(index)
+                                                rotation: placeMouse.containsMouse ? 45 : 0
+                                                Behavior on rotation { enabled: theme.animate; SpringAnimation { spring: 2.5; damping: 0.26 } }
+                                            }
+                                            LoafIcon {
+                                                anchors.centerIn: parent
+                                                name: modelData.icon
+                                                size: 24
+                                                color: pcView.placeOnContainer(index)
+                                            }
                                         }
                                         Text {
                                             text: modelData.name
                                             color: theme.textMain
                                             font.pixelSize: theme.fs(13)
                                             font.bold: true
+                                            horizontalAlignment: Text.AlignHCenter
                                             Layout.fillWidth: true
                                             elide: Text.ElideRight
                                         }
@@ -489,19 +590,46 @@ Item {
                             model: pcView.quickPlaces
 
                             delegate: Rectangle {
-                                width: 140
-                                height: 50
-                                radius: theme.radiusL
-                                color: theme.surfaceContainer
-                                opacity: cPlaceMouse.containsMouse ? 1.0 : 0.85
+                                width: 156
+                                height: 60
+                                radius: theme.radiusFull
+                                color: cPlaceMouse.containsMouse ? theme.surfaceContainerHigh : theme.surfaceContainer
                                 scale: cPlaceMouse.pressed ? 0.95 : 1.0
+                                Behavior on color { enabled: theme.animate; ColorAnimation { duration: theme.durationFast } }
                                 Behavior on scale { enabled: theme.animate; SpringAnimation { spring: 3.5; damping: 0.3 } }
 
                                 RowLayout {
-                                    anchors.centerIn: parent
-                                    spacing: 8
-                                    LoafIcon { name: modelData.icon; size: 18; color: theme.primary }
-                                    Text { text: modelData.name; color: theme.textMain; font.pixelSize: theme.fs(12); font.bold: true }
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 10
+                                    anchors.rightMargin: 16
+                                    spacing: 10
+
+                                    Item {
+                                        Layout.preferredWidth: 40
+                                        Layout.preferredHeight: 40
+
+                                        LoafShape {
+                                            anchors.fill: parent
+                                            shape: pcView.placeShape(index)
+                                            color: pcView.placeContainer(index)
+                                            rotation: cPlaceMouse.containsMouse ? 45 : 0
+                                            Behavior on rotation { enabled: theme.animate; SpringAnimation { spring: 2.5; damping: 0.26 } }
+                                        }
+                                        LoafIcon {
+                                            anchors.centerIn: parent
+                                            name: modelData.icon
+                                            size: 18
+                                            color: pcView.placeOnContainer(index)
+                                        }
+                                    }
+                                    Text {
+                                        text: modelData.name
+                                        color: theme.textMain
+                                        font.pixelSize: theme.fs(12)
+                                        font.bold: true
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
                                 }
 
                                 MouseArea {
@@ -608,41 +736,79 @@ Item {
                         visible: sectionDelegate.secVisible
                                  && sectionDelegate.secKey === "internal"
                                  && pcView.internalDrives.length > 0
-                        LoafCard {
+                        // Pool summary; with a single drive it would only repeat its card.
+                        Rectangle {
+                            visible: pcView.internalDrives.length > 1
                             Layout.fillWidth: true
+                            Layout.preferredHeight: poolCol.implicitHeight + 40
+                            radius: theme.radiusXl
+                            color: theme.surfaceContainerHigh
 
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 12
+                            ColumnLayout {
+                                id: poolCol
+                                anchors.fill: parent
+                                anchors.margins: 20
+                                spacing: 14
 
-                                LoafIcon { name: "hard-drives"; size: 24; color: theme.primary }
-
-                                ColumnLayout {
+                                RowLayout {
                                     Layout.fillWidth: true
-                                    spacing: 2
-                                    Text {
-                                        text: qsTr("System Drive Pool")
-                                        color: theme.textMain
-                                        font.pixelSize: theme.fs(15)
-                                        font.bold: true
-                                        Layout.fillWidth: true
-                                        elide: Text.ElideRight
+                                    spacing: 16
+
+                                    Item {
+                                        Layout.preferredWidth: 56
+                                        Layout.preferredHeight: 56
+
+                                        LoafShape {
+                                            anchors.fill: parent
+                                            shape: "burst"
+                                            color: theme.primaryContainer
+                                        }
+                                        LoafIcon {
+                                            anchors.centerIn: parent
+                                            name: "hard-drives"
+                                            size: 26
+                                            color: theme.primaryContainerFg
+                                        }
                                     }
-                                    Text {
-                                        text: pcView.formatBytes(pcView.usedInternalBytes) + " used of "
-                                              + pcView.formatBytes(pcView.totalInternalBytes) + "  ·  "
-                                              + pcView.formatBytes(pcView.freeInternalBytes) + " free"
-                                        color: theme.textMuted
-                                        font.pixelSize: theme.fs(12)
+
+                                    ColumnLayout {
                                         Layout.fillWidth: true
-                                        elide: Text.ElideRight
+                                        spacing: 2
+                                        Text {
+                                            text: qsTr("System Drive Pool")
+                                            color: theme.textMain
+                                            font.pixelSize: theme.fs(16)
+                                            font.bold: true
+                                            Layout.fillWidth: true
+                                            elide: Text.ElideRight
+                                        }
+                                        Text {
+                                            text: pcView.formatBytes(pcView.usedInternalBytes) + " used of "
+                                                  + pcView.formatBytes(pcView.totalInternalBytes) + "  ·  "
+                                                  + pcView.formatBytes(pcView.freeInternalBytes) + " free"
+                                            color: theme.textMuted
+                                            font.pixelSize: theme.fs(12)
+                                            Layout.fillWidth: true
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+
+                                    Text {
+                                        text: Math.round(pcView.overallUsage * 100) + "%"
+                                        color: theme.primary
+                                        font.pixelSize: theme.fs(34)
+                                        font.bold: true
+                                        font.letterSpacing: -1
                                     }
                                 }
-                            }
 
-                            UsageBar {
-                                Layout.fillWidth: true
-                                value: pcView.overallUsage
+                                UsageBar {
+                                    Layout.fillWidth: true
+                                    value: pcView.overallUsage
+                                    thickness: 6
+                                    amplitude: 4
+                                    wavelength: 48
+                                }
                             }
                         }
 

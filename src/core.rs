@@ -2683,6 +2683,8 @@ impl cxx_qt::Initialize for qobject::LoafCore {
     fn initialize(mut self: Pin<&mut Self>) {
         self.as_mut().refresh_system_theme();
         self.as_mut().load_places();
+        // The device watcher only reports later changes.
+        self.as_mut().load_drives();
         self.as_mut().load_smb_profiles();
         self.as_mut().refresh_frequent_dirs();
         self.as_mut().update_trash_empty();

@@ -291,8 +291,10 @@ pub struct PaneRust {
     loc: Loc,
     /// Location to return to when a search is cleared.
     before_search: Option<Loc>,
-    all: Vec<Entry>,
-    rows: Vec<Entry>,
+    /// Shared entries: filtering never re-copies rows, it just makes a new
+    /// list of `Arc`s pointing at the same entries.
+    all: Vec<Arc<Entry>>,
+    rows: Vec<Arc<Entry>>,
     starred: HashSet<String>,
     back: Vec<String>,
     forward: Vec<String>,
@@ -525,7 +527,7 @@ impl qobject::LoafEngine {
         }
     }
 
-    fn apply_rows(mut self: Pin<&mut Self>, new_rows: Vec<Entry>, reset: bool) {
+    fn apply_rows(mut self: Pin<&mut Self>, new_rows: Vec<Arc<Entry>>, reset: bool) {
         // A full reset is cheaper for the view than thousands of row ops.
         let big_change = !reset && {
             let old = &self.rows;
@@ -574,8 +576,9 @@ impl qobject::LoafEngine {
         }
     }
 
-    fn visible_rows(&self) -> Vec<Entry> {
-        let filter = self.filter_text().to_string();
+    fn visible_rows(&self) -> Vec<Arc<Entry>> {
+        // Lowercased once here; `visible` compares against name_lower.
+        let filter = listing::lower_filter(&self.filter_text().to_string());
         let show_hidden = *self.show_hidden();
         // Trash, recent and search lists show everything they found.
         let honour_hidden = matches!(self.loc, Loc::Dir(_) | Loc::Archive { .. } | Loc::Mtp(_));
@@ -765,7 +768,7 @@ impl qobject::LoafEngine {
                 if !matches!(loc, Loc::Recent | Loc::Search { .. }) {
                     listing::sort(&mut v, &spec);
                 }
-                v
+                v.into_iter().map(Arc::new).collect::<Vec<_>>()
             });
             let _ = thread.queue(move |mut pane| {
                 if pane.generation.load(Ordering::SeqCst) != gen {
@@ -936,9 +939,9 @@ impl qobject::LoafEngine {
                         return;
                     }
                     let mut all = std::mem::take(&mut pane.as_mut().rust_mut().all);
-                    all.append(&mut batch);
+                    all.extend(batch.drain(..).map(Arc::new));
                     if state::get_bool("disambiguate_duplicates", true) {
-                        listing::disambiguate(&mut all);
+                        listing::disambiguate_shared(&mut all);
                     }
                     pane.as_mut().rust_mut().all = all;
                     pane.as_mut().refilter(false);
@@ -1092,7 +1095,8 @@ impl qobject::LoafEngine {
             .rows
             .iter()
             .enumerate()
-            .filter(|(_, e)| glob_match(&pat, &e.name.to_lowercase()))
+            // Names are stored pre-lowercased; no per-row copies here.
+            .filter(|(_, e)| glob_match(&pat, &e.name_lower))
             .map(|(i, _)| i)
             .collect();
         QString::from(&*serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into()))
@@ -1154,7 +1158,12 @@ fn archive_children(file: &Path, inner: &str, entries: &[archive::Entry]) -> Vec
         let modified = parse_stamp(&e.modified);
         out.push(Entry {
             name: rest.to_string(),
-            path: Loc::Archive { file: file.to_path_buf(), inner: e.path.clone() }.to_string(),
+            name_lower: rest.to_lowercase(),
+            path: Loc::Archive {
+                file: file.to_path_buf(),
+                inner: e.path.clone(),
+            }
+            .to_string(),
             is_dir: e.is_dir,
             is_symlink: false,
             is_hidden: rest.starts_with('.'),

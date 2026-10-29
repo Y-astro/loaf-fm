@@ -288,6 +288,7 @@ pub fn decode_entries(location: &Location, json: &str) -> Result<Vec<listing::En
         let is_hidden = item.name.starts_with('.');
         entries.push(listing::Entry {
             name: item.name.clone(),
+            name_lower: item.name.to_lowercase(),
             path: child_loc.url(),
             is_dir: item.is_dir,
             is_symlink: false,

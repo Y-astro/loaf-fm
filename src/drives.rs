@@ -87,7 +87,7 @@ fn mountpoint_of(v: &serde_json::Value) -> String {
                 3
             } else if m.starts_with("/mnt/") {
                 4
-            } else if !m.starts_with("/var/") && !m.starts_with("/srv") && !m.starts_with("/root") {
+            } else if !m.starts_with("/var/") && !m.starts_with("/srv") && !m.starts_with("/root") && !m.starts_with("/nix") {
                 5
             } else {
                 6
