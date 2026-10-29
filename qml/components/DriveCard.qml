@@ -211,7 +211,7 @@ Item {
             }
 
             Text {
-                text: root.drive && root.drive.provider === "mtp" ? qsTr("USB phone · Read-only") : ((root.drive && root.drive.device) ? root.drive.device : "")
+                text: root.drive && root.drive.provider === "mtp" ? qsTr("USB phone") : ((root.drive && root.drive.device) ? root.drive.device : "")
                 color: theme.textMuted
                 font.pixelSize: theme.fs(12)
                 elide: Text.ElideRight

@@ -654,7 +654,8 @@ impl qobject::LoafEngine {
         self.as_mut().set_breadcrumbs_json(QString::from(&*serde_json::to_string(&crumbs).unwrap_or_default()));
         let searching = matches!(loc, Loc::Search { .. });
         self.as_mut().set_is_searching_everywhere(searching);
-        self.as_mut().set_read_only(matches!(loc, Loc::Archive { .. } | Loc::Recent | Loc::Search { .. } | Loc::Starred | Loc::Mtp(_)));
+        self.as_mut().set_read_only(matches!(loc, Loc::Archive { .. } | Loc::Recent | Loc::Search { .. } | Loc::Starred)
+            || matches!(&loc, Loc::Mtp(location) if location.storage().is_none()));
         let (b, f) = (!self.back.is_empty(), !self.forward.is_empty());
         self.as_mut().set_can_go_back(b);
         self.as_mut().set_can_go_forward(f);

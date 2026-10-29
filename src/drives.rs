@@ -491,7 +491,7 @@ mod tests {
           {
             "name": "Redmi K20 Pro",
             "udi": "/test/phone",
-            "url": "mtp://2f746573742f70686f6e65",
+            "url": "mtp://loaf/2f746573742f70686f6e65",
             "model": "Redmi K20 Pro",
             "icon": "device-mobile",
             "total_bytes": 116933570560,
@@ -502,7 +502,7 @@ mod tests {
         assert_eq!(d.len(), 1);
         let phone = &d[0];
         assert_eq!(phone.name, "Redmi K20 Pro");
-        assert_eq!(phone.device, "mtp://2f746573742f70686f6e65/");
+        assert_eq!(phone.device, "mtp://loaf/2f746573742f70686f6e65/");
         assert!(!phone.is_mounted);
         assert!(phone.mount_point.is_empty());
         assert_eq!(phone.provider, "mtp");
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn rejects_ambiguous_mtp_identity_and_block_actions() {
         assert!(parse_mtp_devices(r#"[{"name":"Phone","url":"mtp:/"}]"#).is_empty());
-        let uri = "mtp://2f746573742f70686f6e65";
+        let uri = "mtp://loaf/2f746573742f70686f6e65";
         assert!(mount(uri).is_err());
         assert!(unmount(uri).is_err());
         assert!(lock(uri).is_err());

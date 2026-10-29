@@ -265,7 +265,7 @@ Item {
         var err = core.rename_item(path, newName);
         if (err.length > 0) {
             window.toast("error", err);
-        } else {
+        } else if (paneEngine.location_kind !== "mtp") {
             var parent = path.substring(0, path.lastIndexOf("/"));
             pendingSelect = [parent + "/" + newName.trim()];
         }
@@ -299,6 +299,7 @@ Item {
         var out = [];
         for (var i = 0; i < urls.length; ++i) {
             var u = urls[i].toString();
+            if (u.indexOf("mtp://") === 0) { out.push(u); continue; }
             if (u.indexOf("file://") !== 0)
                 continue;
             var raw = u.substring(7);
@@ -332,7 +333,7 @@ Item {
     }
 
     function dropTargetDir() {
-        return paneEngine.location_kind === "dir" ? paneEngine.current_path : "";
+        return paneEngine.location_kind === "dir" || (paneEngine.location_kind === "mtp" && !paneEngine.read_only) ? paneEngine.current_path : "";
     }
 
     property real animZoom: theme.zoom
@@ -390,8 +391,8 @@ Item {
             }
 
             Text {
-                visible: paneEngine.location_kind === "mtp"
-                text: qsTr("Read-only")
+                visible: paneEngine.location_kind === "mtp" && paneEngine.read_only
+                text: qsTr("Choose storage")
                 color: theme.textMuted
                 font.pixelSize: theme.fs(11)
             }
@@ -1174,7 +1175,7 @@ Item {
                                 return;
                             // Archive members aren't real files; trashed
                             // files must be restored, not dragged out.
-                            if (paneEngine.location_kind === "archive" || paneEngine.location_kind === "trash" || paneEngine.location_kind === "mtp")
+                            if (paneEngine.location_kind === "archive" || paneEngine.location_kind === "trash" || (paneEngine.location_kind === "mtp" && paneEngine.read_only))
                                 return;
                             var dx = mouse.x - pressPt.x, dy = mouse.y - pressPt.y;
                             if (dx * dx + dy * dy >= 36) {
@@ -1678,7 +1679,7 @@ Item {
                                 return;
                             // Archive members aren't real files; trashed
                             // files must be restored, not dragged out.
-                            if (paneEngine.location_kind === "archive" || paneEngine.location_kind === "trash" || paneEngine.location_kind === "mtp")
+                            if (paneEngine.location_kind === "archive" || paneEngine.location_kind === "trash" || (paneEngine.location_kind === "mtp" && paneEngine.read_only))
                                 return;
                             var dx = mouse.x - pressPt.x, dy = mouse.y - pressPt.y;
                             if (dx * dx + dy * dy >= 36) {

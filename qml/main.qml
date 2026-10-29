@@ -43,6 +43,8 @@ ApplicationWindow {
     property int currentTab: 0
 
     // Async drive mount auto-open tracking
+    property var mtpClipboardPaths: []
+    property bool mtpClipboardCut: false
     property string pendingMountDevice: ""
     property bool pendingMountInNewTab: false
     property string pendingMountView: ""
@@ -213,7 +215,11 @@ ApplicationWindow {
 
     Connections {
         target: nativeBridge
-        function onClipboardChanged() { window.refreshCutSet(); }
+        function onClipboardChanged() {
+            window.mtpClipboardPaths = [];
+            window.mtpClipboardCut = false;
+            window.refreshCutSet();
+        }
         function onMtpDevicesChanged() {
             core.load_drives();
             if (pane0.engine.location_kind === "mtp") pane0.engine.refresh();
@@ -244,7 +250,7 @@ ApplicationWindow {
             }
             showFiles();
         } else if (pane.engine.location_kind === "mtp") {
-            window.toast("info", qsTr("Opening phone files is not available yet. You can browse folders and view file details in List view."));
+            core.open_item(item.path);
         } else if (pane.engine.location_kind === "trash") {
             quickLook.showFor(item.path);
         } else if (theme.browseArchives && core.is_archive_file(item.path)) {
@@ -260,8 +266,19 @@ ApplicationWindow {
 
     function copySelection(cut) {
         var paths = selectedPaths();
-        if (paths.length === 0 || engine.location_kind === "archive" || engine.location_kind === "trash" || engine.location_kind === "mtp")
+        if (paths.length === 0 || engine.location_kind === "archive" || engine.location_kind === "trash")
             return;
+        if (engine.location_kind === "mtp") {
+            if (cut && engine.read_only) return;
+            nativeBridge.setClipboardFiles(paths, cut);
+            mtpClipboardPaths = paths.slice();
+            mtpClipboardCut = cut;
+            var selected = {};
+            if (cut) paths.forEach(function(path) { selected[path] = true; });
+            cutSet = selected;
+            toast("info", qsTr("%1 phone items copied to Loaf's clipboard").arg(paths.length));
+            return;
+        }
         nativeBridge.setClipboardFiles(paths, cut);
         toast("info", cut ? theme.plural(paths.length, qsTr("1 item cut"), qsTr("%1 items cut")) : theme.plural(paths.length, qsTr("1 item copied"), qsTr("%1 items copied")));
     }
@@ -275,6 +292,10 @@ ApplicationWindow {
     }
 
     function pasteInto(dest) {
+        if (mtpClipboardPaths.length > 0) {
+            transfer(mtpClipboardPaths.slice(), dest, mtpClipboardCut ? "move" : "copy", mtpClipboardCut);
+            return;
+        }
         var c = nativeBridge.clipboardFiles();
         if (!c.paths || c.paths.length === 0 || !dest)
             return;
@@ -288,6 +309,10 @@ ApplicationWindow {
     // Starts a copy/move, asking first when names clash. `fromCut` is set
     // only when pasting a cut, which is when the clipboard gets used up.
     function transfer(paths, dest, mode, fromCut) {
+        if (dest.indexOf("mtp:") === 0 || paths.some(function(path) { return path.indexOf("mtp:") === 0; })) {
+            core.transfer(JSON.stringify(paths), dest, mode, "rename");
+            return;
+        }
         var conflicts = JSON.parse(core.check_conflicts(JSON.stringify(paths), dest) || "[]");
         if (conflicts.length > 0) {
             conflictDialog.showFor(conflicts, paths, dest, mode, !!fromCut);
@@ -312,7 +337,11 @@ ApplicationWindow {
             deleteSelection();
             return;
         }
-        if (engine.location_kind === "archive" || engine.location_kind === "mtp")
+        if (engine.location_kind === "mtp") {
+            window.deleteSelection();
+            return;
+        }
+        if (engine.location_kind === "archive")
             return;
         core.trash_items(JSON.stringify(paths));
         activePane.clearSelection();
@@ -320,7 +349,7 @@ ApplicationWindow {
 
     function deleteSelection() {
         var paths = selectedPaths();
-        if (paths.length === 0 || engine.location_kind === "archive" || engine.location_kind === "mtp")
+        if (paths.length === 0 || engine.location_kind === "archive" || (engine.location_kind === "mtp" && engine.read_only))
             return;
         var pane = activePane;
         confirmDialog.ask(
@@ -339,21 +368,24 @@ ApplicationWindow {
     }
 
     function startNewFolder() {
-        if (engine.location_kind !== "dir")
+        if (engine.location_kind !== "dir" && !(engine.location_kind === "mtp" && !engine.read_only))
             return;
         inputModal.showNewFolder();
     }
 
+    function previewItem(path) {
+        if (path.indexOf("mtp:") === 0) core.preview_mtp(path);
+        else quickLook.showFor(path);
+    }
+
     function toggleQuickLook() {
-        if (engine.location_kind === "mtp")
-            return;
         if (quickLook.visible) {
             quickLook.close();
             return;
         }
         var paths = selectedPaths();
         if (paths.length > 0)
-            quickLook.showFor(activePane.cursorPath || paths[paths.length - 1]);
+            window.previewItem(activePane.cursorPath || paths[paths.length - 1]);
     }
     function saveCurrentTab() {
         var t = tabs[currentTab];
@@ -684,7 +716,7 @@ ApplicationWindow {
     Shortcut { sequences: ["Ctrl+Y", "Ctrl+Shift+Z"]; enabled: core.can_redo && !window.anyModalOpen && !searchInput.activeFocus; onActivated: core.redo() }
     Shortcut { sequence: "Ctrl+C"; enabled: window.gridKeyboardReady; onActivated: window.copySelection(false) }
     Shortcut { sequence: "Ctrl+X"; enabled: window.gridKeyboardReady; onActivated: window.copySelection(true) }
-    Shortcut { sequence: "Ctrl+V"; enabled: window.gridKeyboardReady && engine.location_kind === "dir"; onActivated: window.pasteInto(engine.current_path) }
+    Shortcut { sequence: "Ctrl+V"; enabled: window.gridKeyboardReady && (engine.location_kind === "dir" || (engine.location_kind === "mtp" && !engine.read_only)); onActivated: window.pasteInto(engine.current_path) }
     Shortcut { sequence: "Ctrl+A"; enabled: window.gridKeyboardReady; onActivated: window.activePane.selectAll() }
     Shortcut { sequence: "Ctrl+Shift+I"; enabled: window.gridKeyboardReady; onActivated: window.activePane.invertSelection() }
     Shortcut { sequence: "Ctrl+S"; enabled: window.gridKeyboardReady; onActivated: patternModal.openFor() }
@@ -693,7 +725,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+F"; onActivated: { window.showFiles(); searchInput.forceActiveFocus(); searchInput.selectAll(); } }
     Shortcut {
         sequence: "F2"
-        enabled: window.gridKeyboardReady && engine.location_kind !== "mtp"
+        enabled: window.gridKeyboardReady && (engine.location_kind !== "mtp" || (!engine.read_only && window.selectedPaths().length === 1))
         onActivated: {
             if (window.selectedPaths().length > 1)
                 batchRename.showFor(window.activePane.selectedItems());
@@ -839,6 +871,7 @@ ApplicationWindow {
             }
         }
         onNotify: function(kind, text) { window.toast(kind, text); }
+        onMtp_preview_ready: function(path) { quickLook.showFor(path); }
         onOperation_finished: function(kind, ok, resultJson) {
             var r = null;
             try { r = JSON.parse(resultJson); } catch (e) { r = null; }
@@ -851,6 +884,19 @@ ApplicationWindow {
             }
             if (r && r.reload_drives)
                 core.load_drives();
+            if (r && r.mtp) {
+                pane0.engine.refresh();
+                if (pane1Loader.item) pane1Loader.item.engine.refresh();
+                if (ok && r.mode === "move") {
+                    var clip = nativeBridge.clipboardFiles();
+                    if (clip.cut && JSON.stringify(clip.paths) === JSON.stringify(r.sources)) nativeBridge.clearClipboardIfOurs();
+                }
+                if (ok && r.mode === "move" && JSON.stringify(r.sources) === JSON.stringify(window.mtpClipboardPaths)) {
+                    window.mtpClipboardPaths = [];
+                    window.mtpClipboardCut = false;
+                    window.cutSet = {};
+                }
+            }
             if (kind === "drive") {
                 if (r && (r.action === "mount" || r.action === "unlock")
                         && window.pendingMountDevice.length > 0 && r.device === window.pendingMountDevice) {
@@ -2031,6 +2077,7 @@ ApplicationWindow {
     // Percent-encodes each path segment so names with spaces, '#' or '%'
     // survive as URIs in other applications.
     function fileUri(path) {
+        if (path.indexOf("mtp://") === 0) return path;
         return "file://" + path.split("/").map(encodeURIComponent).join("/");
     }
 
@@ -2249,13 +2296,18 @@ ApplicationWindow {
         var m = [];
 
         if (kind === "mtp") {
-            if (item.is_dir) {
-                m.push({ text: qsTr("Open"), icon: "folder-open", action: function() { pane.openSelected(); } });
-                m.push({ text: qsTr("Open in New Tab"), icon: "tabs", action: function() {
-                    pane.selectedItems().filter(function(entry) { return entry.is_dir; }).forEach(function(entry) { window.newTab(entry.path); });
-                } });
+            m.push({ text: qsTr("Open"), icon: "folder-open", action: function() { pane.openSelected(); } });
+            if (item.is_dir) m.push({ text: qsTr("Open in New Tab"), icon: "tabs", action: function() {
+                pane.selectedItems().filter(function(entry) { return entry.is_dir; }).forEach(function(entry) { window.newTab(entry.path); });
+            } });
+            if (!item.is_dir) m.push({ text: qsTr("Quick Look"), icon: "eye", action: function() { window.previewItem(item.path); } });
+            m.push({ text: qsTr("Copy"), icon: "copy", shortcut: "Ctrl+C", action: function() { window.copySelection(false); } });
+            if (!pane.engine.read_only) {
+                m.push({ text: qsTr("Cut"), icon: "scissors", shortcut: "Ctrl+X", action: function() { window.copySelection(true); } });
+                if (single) m.push({ text: qsTr("Rename…"), icon: "pencil-simple", shortcut: "F2", action: function() { pane.startRename(); } });
+                m.push({ text: qsTr("Delete Permanently"), icon: "trash", danger: true, action: function() { window.deleteSelection(); } });
             }
-            m.push({ text: qsTr("Copy Location"), icon: "copy", action: function() { nativeBridge.setClipboardText(paths.join("\n")); } });
+            m.push({ text: qsTr("Copy Location"), icon: "link", action: function() { nativeBridge.setClipboardText(paths.join("\n")); } });
             contextMenu.model = m;
             contextMenu.openAt(mx, my);
             return;
@@ -2389,13 +2441,14 @@ ApplicationWindow {
             contextMenu.openAt(mx, my);
             return;
         }
-        if (kind === "dir") {
+        if (kind === "dir" || (kind === "mtp" && !e.read_only)) {
             var newSub = [
                 { text: qsTr("Folder"), icon: "folder-plus", shortcut: "Ctrl+Shift+N", action: function() { inputModal.showNewFolder(); } },
                 { text: qsTr("Empty File"), icon: "file-plus", action: function() { inputModal.showNewFile(); } },
                 { text: qsTr("Symlink…"), icon: "link", action: function() { symlinkModal.openFor(e.current_path); } }
             ];
-            var templates = JSON.parse(core.templates_json() || "[]");
+            if (kind === "mtp") newSub = newSub.filter(function(row) { return row.icon !== "link"; });
+            var templates = kind === "dir" ? JSON.parse(core.templates_json() || "[]") : [];
             if (templates.length > 0) {
                 newSub.push({ text: qsTr("From Template"), icon: "file-doc", submenu: menuFromTree(templates, function(tpl) {
                     var created = core.create_from_template(tpl, e.current_path);
@@ -2406,7 +2459,7 @@ ApplicationWindow {
                 }) });
             }
             m.push({ text: qsTr("New…"), icon: "plus-circle", itemKey: "new", submenu: newSub });
-            if (nativeBridge.clipboardHasFiles())
+            if (nativeBridge.clipboardHasFiles() || window.mtpClipboardPaths.length > 0)
                 m.push({ text: qsTr("Paste"), icon: "clipboard", shortcut: "Ctrl+V", itemKey: "paste", separatorBefore: true, action: function() { window.pasteInto(e.current_path); } });
         }
         if (e.item_count > 0) {

@@ -44,6 +44,8 @@ pub mod qobject {
         fn notify(self: Pin<&mut LoafCore>, kind: QString, text: QString);
         #[qsignal]
         fn operation_finished(self: Pin<&mut LoafCore>, kind: QString, ok: bool, result_json: QString);
+        #[qsignal]
+        fn mtp_preview_ready(self: Pin<&mut LoafCore>, path: QString);
         /// An archive or encrypted drive needs a password: {kind, ...}.
         #[qsignal]
         fn password_required(self: Pin<&mut LoafCore>, request_json: QString);
@@ -176,6 +178,8 @@ pub mod qobject {
         fn open_uri(self: Pin<&mut LoafCore>, uri: &QString);
         #[qinvokable]
         fn quick_look(self: &LoafCore, path: &QString) -> QString;
+        #[qinvokable]
+        fn preview_mtp(self: Pin<&mut LoafCore>, path: &QString);
         #[qinvokable]
         fn get_item_info(self: &LoafCore, path: &QString) -> QString;
         #[qinvokable]
@@ -1344,7 +1348,17 @@ impl qobject::LoafCore {
     pub fn open_item(mut self: Pin<&mut Self>, path: &QString) {
         let p = path.to_string();
         if p.starts_with("mtp:") {
-            self.as_mut().notify(q("info"), q("Opening phone files is not available yet"));
+            let thread = self.qt_thread();
+            self.spawn_op("open", "Downloading phone file".to_string(), move |op| {
+                match crate::mtp_ops::local_copy(&p, op) {
+                    Ok(local) => {
+                        let path = local.to_string_lossy().to_string();
+                        let _ = thread.queue(move |core| core.open_item(&q(&path)));
+                        Outcome::ok("Opened a downloaded copy. Copy changes back to update the phone.")
+                    }
+                    Err(error) => Outcome::err(error),
+                }
+            });
             return;
         }
         if p.starts_with(crate::pane::ARCHIVE_SCHEME) {
@@ -1603,6 +1617,21 @@ impl qobject::LoafCore {
             self.as_mut().notify(q("error"), q(&format!("No application can open “{}”", u)));
         }
     }
+    pub fn preview_mtp(self: Pin<&mut Self>, path: &QString) {
+        let path = path.to_string();
+        let thread = self.qt_thread();
+        self.spawn_op("preview", "Downloading phone preview".to_string(), move |op| {
+            match crate::mtp_ops::local_copy(&path, op) {
+                Ok(local) => {
+                    let path = local.to_string_lossy().to_string();
+                    let _ = thread.queue(move |mut core| core.as_mut().mtp_preview_ready(q(&path)));
+                    Outcome::ok("")
+                }
+                Err(error) => Outcome::err(error),
+            }
+        });
+    }
+
     pub fn quick_look(&self, path: &QString) -> QString {
         q(&serde_json::to_string(&info::quick_look(Path::new(&path.to_string()))).unwrap_or_else(|_| "{}".into()))
     }
@@ -1663,6 +1692,11 @@ impl qobject::LoafCore {
         q(&secret_get(&key.to_string()))
     }
     pub fn check_conflicts(&self, paths_json: &QString, dest: &QString) -> QString {
+        // MTP conflicts are resolved on the transfer worker, never by blocking the GUI.
+        let locations = serde_json::from_str::<Vec<String>>(&paths_json.to_string()).unwrap_or_default();
+        if dest.to_string().starts_with("mtp:") || locations.iter().any(|path| path.starts_with("mtp:")) {
+            return q("[]");
+        }
         let dest = PathBuf::from(dest.to_string());
         let mut out = Vec::new();
         for src in parse_paths(paths_json) {
@@ -1690,6 +1724,21 @@ impl qobject::LoafCore {
     }
 
     pub fn transfer(self: Pin<&mut Self>, paths_json: &QString, dest: &QString, mode: &QString, resolution: &QString) {
+        let locations = serde_json::from_str::<Vec<String>>(&paths_json.to_string()).unwrap_or_default();
+        let target = dest.to_string();
+        if target.starts_with("mtp:") || locations.iter().any(|path| path.starts_with("mtp:")) {
+            let mode = mode.to_string();
+            self.spawn_op("mtp-transfer", "Transferring phone files".to_string(), move |op| {
+                let result = crate::mtp_ops::transfer(&locations, &target, &mode, op);
+                let mut outcome = match &result {
+                    Ok(_) => Outcome::ok("Phone transfer complete"),
+                    Err(error) => Outcome::err(error),
+                };
+                outcome.result = serde_json::json!({"mtp": true, "created": result.ok().unwrap_or_default(), "sources": locations, "mode": mode});
+                outcome
+            });
+            return;
+        }
         let sources = parse_paths(paths_json);
         let dest = PathBuf::from(dest.to_string());
         let mode = mode.to_string();
@@ -1708,7 +1757,12 @@ impl qobject::LoafCore {
         self.spawn_op(&kind, title, move |op| run_transfer(op, sources, dest, &mode, &res));
     }
 
-    pub fn trash_items(self: Pin<&mut Self>, paths_json: &QString) {
+    pub fn trash_items(mut self: Pin<&mut Self>, paths_json: &QString) {
+        let locations = serde_json::from_str::<Vec<String>>(&paths_json.to_string()).unwrap_or_default();
+        if locations.iter().any(|path| path.starts_with("mtp:")) {
+            self.as_mut().notify(q("error"), q("Phone files have no trash. Use Delete Permanently."));
+            return;
+        }
         let paths = parse_paths(paths_json);
         if paths.is_empty() {
             return;
@@ -1753,6 +1807,18 @@ impl qobject::LoafCore {
     }
 
     pub fn delete_items(self: Pin<&mut Self>, paths_json: &QString) {
+        let locations = serde_json::from_str::<Vec<String>>(&paths_json.to_string()).unwrap_or_default();
+        if locations.iter().any(|path| path.starts_with("mtp:")) {
+            self.spawn_op("mtp-delete", "Deleting phone files".to_string(), move |op| {
+                let mut outcome = match crate::mtp_ops::remove(&locations, op) {
+                    Ok(()) => Outcome::ok("Phone files deleted"),
+                    Err(error) => Outcome::err(error),
+                };
+                outcome.result = serde_json::json!({"mtp": true});
+                outcome
+            });
+            return;
+        }
         let paths = parse_paths(paths_json);
         if paths.is_empty() {
             return;
@@ -1940,6 +2006,33 @@ impl qobject::LoafCore {
                 return QString::default();
             }
         };
+        if dir.to_string().starts_with("mtp:") {
+            let parent = dir.to_string();
+            self.spawn_op("mtp-create", format!("Creating {} on phone", name), move |op| {
+                let result = if is_dir {
+                    crate::mtp_ops::mkdir(&parent, &name).map(|path| vec![path])
+                } else {
+                    // Use a private, uniquely created staging directory for an empty file upload.
+                    let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+                    let stage = std::env::temp_dir().join(format!("loaf-mtp-empty-{}-{}", std::process::id(), unique));
+                    let mut owned = false;
+                    let result = (|| -> Result<Vec<String>, String> {
+                        use std::os::unix::fs::DirBuilderExt;
+                        std::fs::DirBuilder::new().mode(0o700).create(&stage).map_err(|e| e.to_string())?;
+                        owned = true;
+                        let local = stage.join(&name);
+                        std::fs::OpenOptions::new().write(true).create_new(true).open(&local).map_err(|e| e.to_string())?;
+                        crate::mtp_ops::transfer(&[local.to_string_lossy().to_string()], &parent, "copy", op)
+                    })();
+                    if owned { let _ = std::fs::remove_dir_all(&stage); }
+                    result
+                };
+                let mut outcome = match &result { Ok(_) => Outcome::ok("Created on phone"), Err(error) => Outcome::err(error) };
+                outcome.result = serde_json::json!({"mtp": true, "created": result.ok().unwrap_or_default()});
+                outcome
+            });
+            return QString::default();
+        }
         let target = PathBuf::from(dir.to_string()).join(&name);
         if std::fs::symlink_metadata(&target).is_ok() {
             self.as_mut().notify(q("error"), q(&format!("“{}” already exists", name)));
@@ -1992,7 +2085,15 @@ impl qobject::LoafCore {
 
     pub fn rename_item(mut self: Pin<&mut Self>, path: &QString, new_name: &QString) -> QString {
         if path.to_string().starts_with("mtp:") {
-            return q("Phone browsing is read-only");
+            let name = match validate_name(&new_name.to_string()) { Ok(name) => name, Err(error) => return q(&error) };
+            let source = path.to_string();
+            self.spawn_op("mtp-rename", "Renaming phone item".to_string(), move |_op| {
+                let result = crate::mtp_ops::rename(&source, &name);
+                let mut outcome = match &result { Ok(_) => Outcome::ok("Renamed on phone"), Err(error) => Outcome::err(error) };
+                outcome.result = serde_json::json!({"mtp": true, "created": result.ok().into_iter().collect::<Vec<_>>()});
+                outcome
+            });
+            return QString::default();
         }
         let from = PathBuf::from(path.to_string());
         let name = match validate_name(&new_name.to_string()) {

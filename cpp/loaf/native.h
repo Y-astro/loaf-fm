@@ -117,6 +117,39 @@ rust::String list_kmtp_devices_json();
 // Returns JSON object: { "entries": [...], "error": "..." }
 rust::String list_mtp_directory(rust::Str url);
 
+// Performs an MTP operation (stat, mkdir, rename, delete, download, upload).
+// Returns JSON object: { "ok": true, ... } or { "error": "..." }
+rust::String mtp_operation_json(rust::Str action, rust::Str url, rust::Str argument);
+
+class MtpTransferReceiver : public QObject
+{
+    Q_OBJECT
+public:
+    explicit MtpTransferReceiver(QObject *parent = nullptr) : QObject(parent) {}
+
+public Q_SLOTS:
+    void onCopyFinished(int result) {
+        m_finished = true;
+        m_result = result;
+        Q_EMIT finished();
+    }
+    void onCopyProgress(quint64 sent, quint64 total) {
+        m_progressSent = sent;
+        m_progressTotal = total;
+        Q_EMIT progressReceived();
+    }
+
+Q_SIGNALS:
+    void finished();
+    void progressReceived();
+
+public:
+    bool m_finished = false;
+    int m_result = -1;
+    quint64 m_progressSent = 0;
+    quint64 m_progressTotal = 0;
+};
+
 // MIME helpers for Rust.
 rust::String mime_type_for(rust::Str path, bool sniff);
 rust::String mime_comment_for(rust::Str mime);

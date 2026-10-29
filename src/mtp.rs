@@ -84,6 +84,9 @@ fn is_valid_component(name: &str) -> bool {
 impl Location {
     pub fn parse(s: &str) -> Option<Self> {
         let rest = s.strip_prefix("mtp://")?;
+        // Keep long physical identifiers in the path; Qt applies DNS label limits to hosts.
+        // Accept old addresses when restoring sessions, but always emit the canonical form.
+        let rest = rest.strip_prefix("loaf/").unwrap_or(rest);
         // Canonical device roots end in '/', separating their identity from descendants.
         let rest = if rest.ends_with('/') && rest.matches('/').count() == 1 {
             &rest[..rest.len() - 1]
@@ -141,7 +144,7 @@ impl Location {
 
     pub fn url(&self) -> String {
         let udi_hex = hex_encode(self.udi.as_bytes());
-        let mut out = format!("mtp://{}", udi_hex);
+        let mut out = format!("mtp://loaf/{}", udi_hex);
         if let Some(ref st) = self.storage {
             out.push('/');
             out.push_str(&percent_encode(st));
@@ -190,7 +193,7 @@ impl Location {
     }
 
     pub fn root_url(&self) -> String {
-        format!("mtp://{}/", hex_encode(self.udi.as_bytes()))
+        format!("mtp://loaf/{}/", hex_encode(self.udi.as_bytes()))
     }
 
     pub fn breadcrumbs(&self) -> Vec<(String, String)> {
@@ -272,9 +275,10 @@ pub fn decode_entries(location: &Location, json: &str) -> Result<Vec<listing::En
         .ok_or_else(|| "Missing entries in MTP response".to_string())?;
     let mut entries = Vec::with_capacity(raw_entries.len());
 
+    let mut names = std::collections::HashSet::new();
     for item in raw_entries {
-        if !is_valid_component(&item.name) {
-            continue;
+        if !is_valid_component(&item.name) || !names.insert(item.name.clone()) {
+            return Err("Phone returned an invalid or duplicate filename".to_string());
         }
         let child_loc = match location.child(&item.name) {
             Some(loc) => loc,
@@ -294,7 +298,7 @@ pub fn decode_entries(location: &Location, json: &str) -> Result<Vec<listing::En
             system_icon: sys_icon,
             category,
             thumbable: false,
-            detail: "MTP read-only".to_string(),
+            detail: "MTP".to_string(),
             display_name: item.name,
         });
     }
@@ -315,7 +319,7 @@ mod tests {
     fn test_location_roundtrip_and_edge_cases() {
         let udi = "/org/kde/kmtpd/device_0";
         let hex_u = hex_encode(udi.as_bytes());
-        let root_url = format!("mtp://{}/", hex_u);
+        let root_url = format!("mtp://loaf/{}/", hex_u);
 
         let loc = Location::parse(&root_url).expect("parse root");
         assert_eq!(loc.url(), root_url);
@@ -441,24 +445,12 @@ mod tests {
                     "is_dir": true,
                     "size": 0,
                     "modified": 1700000200
-                },
-                {
-                    "name": "invalid/name",
-                    "is_dir": false,
-                    "size": 10,
-                    "modified": 1700000300
-                },
-                {
-                    "name": "..",
-                    "is_dir": true,
-                    "size": 0,
-                    "modified": 1700000400
                 }
             ]
         }"#;
 
         let entries = decode_entries(&loc, json).expect("decode entries");
-        assert_eq!(entries.len(), 3); // invalid/name and .. skipped
+        assert_eq!(entries.len(), 3);
 
         let dcim = &entries[0];
         assert_eq!(dcim.name, "DCIM");
@@ -469,7 +461,7 @@ mod tests {
         assert_eq!(dcim.thumbable, false);
         assert_eq!(dcim.category, "folder");
         assert_eq!(dcim.icon, "folder");
-        assert_eq!(dcim.detail, "MTP read-only");
+        assert_eq!(dcim.detail, "MTP");
         assert_eq!(dcim.path, loc.child("DCIM").unwrap().url());
 
         let photo = &entries[1];
@@ -481,7 +473,7 @@ mod tests {
         assert_eq!(photo.thumbable, false); // thumbable must be false for MTP
         assert_eq!(photo.category, "image");
         assert_eq!(photo.icon, "file-image");
-        assert_eq!(photo.detail, "MTP read-only");
+        assert_eq!(photo.detail, "MTP");
         assert_eq!(photo.size, 2048576);
         assert_eq!(photo.modified, 1700000100);
 
@@ -501,6 +493,9 @@ mod tests {
         let res = decode_entries(&root_loc, json_err);
         assert_eq!(res.unwrap_err(), "Device is locked");
 
+        let invalid_name =
+            r#"{"entries":[{"name":"../escape","is_dir":false,"size":0,"modified":0}]}"#;
+        assert!(decode_entries(&root_loc, invalid_name).is_err());
         let json_invalid = "not-json";
         assert!(decode_entries(&root_loc, json_invalid).is_err());
     }

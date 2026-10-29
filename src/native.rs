@@ -28,6 +28,7 @@ pub mod ffi {
 
         fn list_kmtp_devices_json() -> String;
         fn list_mtp_directory(url: &str) -> String;
+        fn mtp_operation_json(action: &str, url: &str, argument: &str) -> String;
     }
 }
 
@@ -37,6 +38,10 @@ pub fn list_kmtp_devices_json() -> String {
 
 pub fn list_mtp_directory(url: &str) -> String {
     ffi::list_mtp_directory(url)
+}
+
+pub fn mtp_operation_json(action: &str, url: &str, argument: &str) -> String {
+    ffi::mtp_operation_json(action, url, argument)
 }
 
 pub fn mime_type(path: &std::path::Path, sniff: bool) -> String {

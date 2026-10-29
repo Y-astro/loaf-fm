@@ -172,9 +172,13 @@ Requirements:
 Optional at runtime (features degrade gracefully without them):
 - `7zip`/`p7zip` (zip, 7z, rar, iso, encrypted archives), `tar`, `zstd`, `cpio`
 - `udisks2` (mount, eject, unlock encrypted drives, rename labels)
-- KDE MTP support (`kio-extras` with `kmtpd`) for USB phone browsing. Unlock the phone, enable file transfer, then open it in the sidebar or This PC. Browsing is read-only: folders, Back/Forward, sorting and file metadata work; phone file opening, previews, transfers and modifications are unavailable. KIOFuse is not required.
+- KDE MTP support (`kio-extras` with `kmtpd`) for USB phone browsing and read/write transfers; KIOFuse is not required.
 - `ffmpegthumbnailer` / `evince-thumbnailer` (video and PDF thumbnails)
 - `xdg-utils`, `libsecret` (`secret-tool`, to remember drive passphrases), `polkit` (Open as Administrator)
+
+MTP phones must be unlocked with USB file transfer enabled. Loaf supports file and folder copies and moves in both directions, new folders and files, rename, preview and permanent deletion. Name collisions create a separate copy. Phone roots are protected; MTP has no trash, undo or symbolic links. Cancellation stops further files after the current phone transfer finishes. A failed transfer can leave a partial destination; a failed move retains its source.
+
+Opening or previewing a phone file downloads a private local copy. Editor changes are not uploaded automatically: copy the edited file back to the phone. Loaf's MTP clipboard format supports transfers between Loaf windows.
 
 ```bash
 cargo build --release
