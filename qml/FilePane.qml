@@ -289,7 +289,7 @@ Item {
                 if (items[i].is_dir)
                     window.openInNewTab(items[i].path);
                 else
-                    core.open_item(items[i].path);
+                    window.openItem(pane, items[i]);
             }
         }
     }
@@ -386,6 +386,13 @@ Item {
                     font.pixelSize: theme.fs(11)
                     font.bold: true
                 }
+            }
+
+            Text {
+                visible: paneEngine.location_kind === "mtp"
+                text: qsTr("Read-only")
+                color: theme.textMuted
+                font.pixelSize: theme.fs(11)
             }
 
             Rectangle {
@@ -1161,7 +1168,7 @@ Item {
                                 return;
                             // Archive members aren't real files; trashed
                             // files must be restored, not dragged out.
-                            if (paneEngine.location_kind === "archive" || paneEngine.location_kind === "trash")
+                            if (paneEngine.location_kind === "archive" || paneEngine.location_kind === "trash" || paneEngine.location_kind === "mtp")
                                 return;
                             var dx = mouse.x - pressPt.x, dy = mouse.y - pressPt.y;
                             if (dx * dx + dy * dy >= 36) {
@@ -1549,7 +1556,7 @@ Item {
                                 return;
                             // Archive members aren't real files; trashed
                             // files must be restored, not dragged out.
-                            if (paneEngine.location_kind === "archive" || paneEngine.location_kind === "trash")
+                            if (paneEngine.location_kind === "archive" || paneEngine.location_kind === "trash" || paneEngine.location_kind === "mtp")
                                 return;
                             var dx = mouse.x - pressPt.x, dy = mouse.y - pressPt.y;
                             if (dx * dx + dy * dy >= 36) {

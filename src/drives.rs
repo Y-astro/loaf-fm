@@ -1,6 +1,5 @@
-//! Block devices for the "This PC" page: discovery through `lsblk`, usage
-//! through `statvfs`, and actions through UDisks (`udisksctl` / D-Bus), so
-//! nothing needs root and polkit asks when it must.
+//! Devices for the sidebar and This PC: block volumes via lsblk/UDisks,
+//! and optional USB MTP phones via KDE's session D-Bus service.
 
 use crate::util::{self, which};
 use serde::Serialize;
@@ -30,6 +29,10 @@ pub struct Drive {
     pub free_str: String,
     pub percent: f64,
     pub model: String,
+    /// Provider kind: "block" (default) or "mtp".
+    pub provider: String,
+    /// Icon override (e.g. "device-mobile" for phones).
+    pub icon: String,
 }
 
 pub fn statvfs(mount: &str) -> Option<(u64, u64)> {
@@ -177,6 +180,8 @@ pub fn parse_lsblk(json: &str, usage: &dyn Fn(&str) -> Option<(u64, u64)>, remov
             free_str: util::format_size(free),
             percent: pct,
             model: ctx.model.clone(),
+            provider: "block".to_string(),
+            icon: String::new(),
         });
     }
     for d in devs {
@@ -227,8 +232,59 @@ fn disambiguate_drive_names(drives: &mut [Drive]) {
     }
 }
 
-/// All drives (runs `lsblk`; call from a worker thread).
+/// All drives (runs `lsblk` and checks for MTP devices; call from a worker thread).
 pub fn list() -> Vec<Drive> {
+    let mut drives = list_block();
+    let mtp_json = crate::native::list_kmtp_devices_json();
+    drives.extend(parse_mtp_devices(&mtp_json));
+    drives
+}
+
+pub fn parse_mtp_devices(json: &str) -> Vec<Drive> {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(json) else { return vec![] };
+    let Some(arr) = val.as_array() else { return vec![] };
+    let mut out = Vec::new();
+    for item in arr {
+        let name = s(item, "name").trim().to_string();
+        let url = s(item, "url").to_string();
+        let udi = s(item, "udi").to_string();
+        let model = s(item, "model").trim().to_string();
+        let total = item.get("total_bytes").and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64))).unwrap_or(0);
+        let free = item.get("free_bytes").and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64))).unwrap_or(0);
+        let used = total.saturating_sub(free);
+        let pct = if total > 0 { ((used as f64 / total as f64) * 1000.0).round() / 10.0 } else { 0.0 };
+
+        // A phone is a virtual location, never a guessed local mount path.
+        let Some(location) = crate::mtp::Location::parse(&url).filter(|loc| loc.is_root() && loc.udi() == udi) else {
+            continue;
+        };
+        out.push(Drive {
+            name: if !name.is_empty() { name } else { "MTP Device".to_string() },
+            device: location.url(),
+            disk: String::new(),
+            mount_point: String::new(),
+            is_mounted: false,
+            is_external: true,
+            is_locked: false,
+            is_encrypted: false,
+            crypt_device: String::new(),
+            fs_type: "mtp".to_string(),
+            total_bytes: total,
+            used_bytes: used,
+            free_bytes: free,
+            total_str: util::format_size(total),
+            used_str: util::format_size(used),
+            free_str: util::format_size(free),
+            percent: pct,
+            model,
+            provider: "mtp".to_string(),
+            icon: "device-mobile".to_string(),
+        });
+    }
+    out
+}
+
+pub fn list_block() -> Vec<Drive> {
     let Some(lsblk) = which("lsblk") else { return vec![] };
     let out = Command::new(lsblk)
         .args(["-J", "-b", "-o", "NAME,PATH,LABEL,MOUNTPOINTS,FSTYPE,SIZE,RM,HOTPLUG,TRAN,MODEL,TYPE"])
@@ -248,6 +304,10 @@ pub fn list() -> Vec<Drive> {
 }
 
 fn udisks(args: &[&str], stdin: Option<&[u8]>) -> Result<String, String> {
+    let device = args.windows(2).find(|pair| pair[0] == "-b").map(|pair| pair[1]).unwrap_or("");
+    if !device.starts_with("/dev/") {
+        return Err("This action is only supported for block devices".to_string());
+    }
     let bin = which("udisksctl").ok_or("udisks2 (udisksctl) is not installed")?;
     let mut cmd = Command::new(bin);
     cmd.args(args);
@@ -263,7 +323,7 @@ pub fn mount(device: &str) -> Result<String, String> {
     udisks(&["mount", "-b", device], None)?;
     // Resolve from the filesystem model: udisksctl's human-readable output
     // can be localized and is not a reliable navigation target.
-    list().into_iter()
+    list_block().into_iter()
         .find(|d| d.device == device && d.is_mounted)
         .map(|d| d.mount_point)
         .ok_or_else(|| "mounted device has no discoverable mount point".to_string())
@@ -315,6 +375,9 @@ pub fn udisks_object(device: &str) -> String {
 /// Sets a filesystem label through UDisks (polkit asks for permission when
 /// needed); works for ext*, FAT, exFAT, NTFS, btrfs, xfs...
 pub fn set_label(device: &str, label: &str) -> Result<(), String> {
+    if !device.starts_with("/dev/") {
+        return Err("Renaming is only supported for block devices".to_string());
+    }
     let gdbus = which("gdbus").ok_or("gdbus (glib2) is not installed")?;
     let mut cmd = Command::new(gdbus);
     cmd.args([
@@ -420,6 +483,57 @@ mod tests {
     fn object_paths() {
         assert_eq!(udisks_object("/dev/sdb1"), "/org/freedesktop/UDisks2/block_devices/sdb1");
         assert_eq!(udisks_object("/dev/dm-0"), "/org/freedesktop/UDisks2/block_devices/dm_2d0");
+    }
+
+    #[test]
+    fn parses_mtp_devices_metadata() {
+        let json = r#"[
+          {
+            "name": "Redmi K20 Pro",
+            "udi": "/test/phone",
+            "url": "mtp://2f746573742f70686f6e65",
+            "model": "Redmi K20 Pro",
+            "icon": "device-mobile",
+            "total_bytes": 116933570560,
+            "free_bytes": 85724872704
+          }
+        ]"#;
+        let d = parse_mtp_devices(json);
+        assert_eq!(d.len(), 1);
+        let phone = &d[0];
+        assert_eq!(phone.name, "Redmi K20 Pro");
+        assert_eq!(phone.device, "mtp://2f746573742f70686f6e65/");
+        assert!(!phone.is_mounted);
+        assert!(phone.mount_point.is_empty());
+        assert_eq!(phone.provider, "mtp");
+        assert_eq!(phone.icon, "device-mobile");
+        assert!(phone.is_external);
+        assert!(!phone.is_locked);
+        assert_eq!(phone.fs_type, "mtp");
+        assert_eq!(phone.total_bytes, 116933570560);
+        assert_eq!(phone.free_bytes, 85724872704);
+        assert_eq!(phone.used_bytes, 116933570560 - 85724872704);
+        assert!(phone.percent > 0.0);
+    }
+
+    #[test]
+    fn parses_empty_mtp_list() {
+        let d = parse_mtp_devices("[]");
+        assert!(d.is_empty());
+        let d_invalid = parse_mtp_devices("not-json");
+        assert!(d_invalid.is_empty());
+    }
+
+    #[test]
+    fn rejects_ambiguous_mtp_identity_and_block_actions() {
+        assert!(parse_mtp_devices(r#"[{"name":"Phone","url":"mtp:/"}]"#).is_empty());
+        let uri = "mtp://2f746573742f70686f6e65";
+        assert!(mount(uri).is_err());
+        assert!(unmount(uri).is_err());
+        assert!(lock(uri).is_err());
+        assert!(unlock(uri, "unused").is_err());
+        assert!(eject(uri, &[]).is_err());
+        assert!(set_label(uri, "Phone").is_err());
     }
 
     #[test]

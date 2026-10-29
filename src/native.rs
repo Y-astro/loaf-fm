@@ -25,7 +25,18 @@ pub mod ffi {
         fn mime_comment_for(mime: &str) -> String;
 
         fn set_application_identity(version: &str);
+
+        fn list_kmtp_devices_json() -> String;
+        fn list_mtp_directory(url: &str) -> String;
     }
+}
+
+pub fn list_kmtp_devices_json() -> String {
+    ffi::list_kmtp_devices_json()
+}
+
+pub fn list_mtp_directory(url: &str) -> String {
+    ffi::list_mtp_directory(url)
 }
 
 pub fn mime_type(path: &std::path::Path, sniff: bool) -> String {

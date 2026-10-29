@@ -79,7 +79,7 @@ Item {
         return d.device ? String(d.device) : "";
     }
 
-    opacity: root.isMounted ? 1.0 : 0.8
+    opacity: root.isMounted || (root.drive && root.drive.provider === "mtp") ? 1.0 : 0.8
     Behavior on opacity { enabled: theme.animate; NumberAnimation { duration: 140 } }
 
     Rectangle {
@@ -104,7 +104,7 @@ Item {
     Shape {
         id: dashedBorder
         anchors.fill: parent
-        visible: !root.isMounted
+        visible: !root.isMounted && !(root.drive && root.drive.provider === "mtp")
 
         ShapePath {
             strokeColor: theme.outlineVariant
@@ -211,7 +211,7 @@ Item {
             }
 
             Text {
-                text: (root.drive && root.drive.device) ? root.drive.device : ""
+                text: root.drive && root.drive.provider === "mtp" ? qsTr("USB phone · Read-only") : ((root.drive && root.drive.device) ? root.drive.device : "")
                 color: theme.textMuted
                 font.pixelSize: theme.fs(12)
                 elide: Text.ElideRight
@@ -244,7 +244,7 @@ Item {
         anchors.right: parent.right
         anchors.rightMargin: 14
         anchors.verticalCenter: parent.verticalCenter
-        text: qsTr("Mount")
+        text: root.drive && root.drive.provider === "mtp" ? qsTr("Browse") : qsTr("Mount")
         variant: "tonal"
         icon: "download-simple"
         onClicked: root.mountRequested()

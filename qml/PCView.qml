@@ -221,23 +221,24 @@ Item {
     function driveMenuModel(d) {
         var mounted = pcView.isMounted(d);
         var external = d && d.is_external === true;
+        var isMtp = d && d.provider === "mtp";
         var items = [];
 
         items.push({
             "text": qsTr("Open"),
             "icon": "folder-open",
-            "enabled": mounted,
+            "enabled": mounted || isMtp,
             "action": function () { pcView.openDrive(d); }
         });
         if (!mounted) {
             items.push({
-                "text": qsTr("Mount"),
-                "icon": "download",
+                "text": isMtp ? qsTr("Browse") : qsTr("Mount"),
+                "icon": isMtp ? "plugs-connected" : "download",
                 "separatorBefore": true,
                 "action": function () { pcView.mountDrive(d); }
             });
         }
-        if (mounted) {
+        if (mounted && !isMtp) {
             items.push({
                 "text": qsTr("Unmount"),
                 "icon": "eject",
@@ -245,7 +246,7 @@ Item {
                 "action": function () { pcView.unmountDrive(d); }
             });
         }
-        if (external && d.disk) {
+        if (external && d.disk && !isMtp) {
             items.push({
                 "text": qsTr("Eject (Safely Remove)"),
                 "icon": "eject",
@@ -253,7 +254,7 @@ Item {
                 "action": function () { core.eject_drive(d.disk); }
             });
         }
-        if (d.is_encrypted && d.crypt_device) {
+        if (d.is_encrypted && d.crypt_device && !isMtp) {
             items.push({
                 "text": qsTr("Lock Encrypted Drive"),
                 "icon": "lock",
@@ -261,12 +262,14 @@ Item {
                 "action": function () { core.lock_drive(d.crypt_device); }
             });
         }
-        items.push({
-            "text": qsTr("Rename"),
-            "icon": "pencil-simple",
-            "separatorBefore": true,
-            "action": function () { pcView.requestRename(d); }
-        });
+        if (!isMtp) {
+            items.push({
+                "text": qsTr("Rename"),
+                "icon": "pencil-simple",
+                "separatorBefore": true,
+                "action": function () { pcView.requestRename(d); }
+            });
+        }
         return items;
     }
 

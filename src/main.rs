@@ -6,6 +6,7 @@ pub mod fsops;
 pub mod icons;
 pub mod info;
 pub mod listing;
+pub mod mtp;
 pub mod native;
 pub mod pane;
 pub mod search;
@@ -70,7 +71,7 @@ fn parse_args() -> Result<Args, String> {
         .paths
         .into_iter()
         .map(|p| {
-            if p.starts_with("file://") || p.starts_with('/') {
+            if p.starts_with("file://") || p.starts_with("mtp://") || p.starts_with('/') {
                 p
             } else {
                 cwd.join(p).to_string_lossy().to_string()

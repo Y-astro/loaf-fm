@@ -359,6 +359,7 @@ pub struct CoreRust {
     /// An undo or redo is running; further requests wait for it.
     history_running: bool,
     drives: Vec<drives::Drive>,
+    drive_generation: Arc<AtomicU64>,
     size_generation: Arc<AtomicU64>,
     device_watcher: Option<watcher::DeviceWatcher>,
     color_watcher: Option<watcher::DirWatcher>,
@@ -391,6 +392,7 @@ impl Default for CoreRust {
             redo_stack: Vec::new(),
             history_running: false,
             drives: Vec::new(),
+            drive_generation: Arc::new(AtomicU64::new(0)),
             size_generation: Arc::new(AtomicU64::new(0)),
             device_watcher: None,
             color_watcher: None,
@@ -406,7 +408,7 @@ fn parse_paths(json: &QString) -> Vec<PathBuf> {
     serde_json::from_str::<Vec<String>>(&json.to_string())
         .unwrap_or_default()
         .into_iter()
-        .filter(|s| !s.is_empty())
+        .filter(|s| Path::new(s).is_absolute())
         .map(PathBuf::from)
         .collect()
 }
@@ -955,9 +957,14 @@ impl qobject::LoafCore {
     }
     pub fn load_drives(self: Pin<&mut Self>) {
         let thread = self.qt_thread();
+        let generation = self.drive_generation.clone();
+        let requested = generation.fetch_add(1, Ordering::Relaxed) + 1;
         std::thread::spawn(move || {
             let list = drives::list();
             let _ = thread.queue(move |mut core| {
+                if generation.load(Ordering::Relaxed) != requested {
+                    return;
+                }
                 let json = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
                 core.as_mut().rust_mut().drives = list;
                 if core.drives_json().to_string() != json {
@@ -1336,6 +1343,10 @@ impl qobject::LoafCore {
     }
     pub fn open_item(mut self: Pin<&mut Self>, path: &QString) {
         let p = path.to_string();
+        if p.starts_with("mtp:") {
+            self.as_mut().notify(q("info"), q("Opening phone files is not available yet"));
+            return;
+        }
         if p.starts_with(crate::pane::ARCHIVE_SCHEME) {
             return self.open_archive_member(p);
         }
@@ -1980,6 +1991,9 @@ impl qobject::LoafCore {
     }
 
     pub fn rename_item(mut self: Pin<&mut Self>, path: &QString, new_name: &QString) -> QString {
+        if path.to_string().starts_with("mtp:") {
+            return q("Phone browsing is read-only");
+        }
         let from = PathBuf::from(path.to_string());
         let name = match validate_name(&new_name.to_string()) {
             Ok(n) => n,
@@ -2642,6 +2656,12 @@ impl cxx_qt::Initialize for qobject::LoafCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_operations_accept_only_local_paths() {
+        let paths = parse_paths(&q(r#"["/tmp/local.txt", "mtp://2f74657374/Internal%20storage/file.txt", "relative.txt"]"#));
+        assert_eq!(paths, vec![PathBuf::from("/tmp/local.txt")]);
+    }
 
     #[test]
     fn network_bookmark_places() {

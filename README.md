@@ -172,6 +172,7 @@ Requirements:
 Optional at runtime (features degrade gracefully without them):
 - `7zip`/`p7zip` (zip, 7z, rar, iso, encrypted archives), `tar`, `zstd`, `cpio`
 - `udisks2` (mount, eject, unlock encrypted drives, rename labels)
+- KDE MTP support (`kio-extras` with `kmtpd`) for USB phone browsing. Unlock the phone, enable file transfer, then open it in the sidebar or This PC. Browsing is read-only: folders, Back/Forward, sorting and file metadata work; phone file opening, previews, transfers and modifications are unavailable. KIOFuse is not required.
 - `ffmpegthumbnailer` / `evince-thumbnailer` (video and PDF thumbnails)
 - `xdg-utils`, `libsecret` (`secret-tool`, to remember drive passphrases), `polkit` (Open as Administrator)
 

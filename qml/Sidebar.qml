@@ -40,9 +40,11 @@ Rectangle {
 
     readonly property var entries: places.filter(function(p) { return p.id !== "trash"; }).concat(
         drives.map(function(d) {
+            var iconName = d.icon || (d.provider === "mtp" ? "device-mobile" : (d.is_external ? "usb" : "hard-drive"));
+            var sysIcon = d.provider === "mtp" ? "phone-symbolic" : (d.is_external ? "drive-removable-media" : "drive-harddisk");
             return { id: "device:" + d.device, kind: "device", name: d.name,
-                icon: d.is_external ? "usb" : "hard-drive",
-                system_icon: d.is_external ? "drive-removable-media" : "drive-harddisk",
+                icon: iconName,
+                system_icon: sysIcon,
                 path: d.mount_point, drive: d };
         }))
 
@@ -258,7 +260,7 @@ Rectangle {
             model: rail.entries
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; width: 6 }
 
-            onContentYChanged: rail.updateHighlight()
+            onContentYChanged: Qt.callLater(rail.updateHighlight)
             onCountChanged: Qt.callLater(rail.updateHighlight)
             Component.onCompleted: Qt.callLater(rail.updateHighlight)
 
@@ -269,18 +271,13 @@ Rectangle {
                 required property int index
                 readonly property bool isDevice: modelData.kind === "device"
                 readonly property real headerHeight: isDevice && (index === 0 || placeList.model[index - 1].kind !== "device")
-                    ? (rail.expanded ? 32 : 12) : 0
+                    ? 12 : 0
                 property alias button: entryButton
                 height: 44 + headerHeight
                 Rectangle {
                     visible: entry.headerHeight > 0
                     x: 12; width: parent.width - 24; height: 1
                     color: theme.separator; opacity: 0.35
-                }
-                Text {
-                    visible: entry.headerHeight > 12
-                    x: 16; y: 8; text: qsTr("Devices")
-                    color: theme.textMuted; font.pixelSize: theme.fs(11); font.bold: true
                 }
                 RailButton {
                     id: entryButton
@@ -291,11 +288,11 @@ Rectangle {
                     label: entry.modelData.name
                     showLabel: rail.expanded
                     selected: rail.activeId === entry.modelData.id
-                    dimmed: entry.isDevice ? !entry.modelData.drive.is_mounted
+                    dimmed: entry.isDevice ? (entry.modelData.drive.provider !== "mtp" && !entry.modelData.drive.is_mounted)
                         : entry.modelData.missing === true || (entry.modelData.kind === "smb" && entry.modelData.connected !== true)
                     dropPath: entry.isDevice ? (entry.modelData.drive.is_mounted ? entry.modelData.path : "")
                         : ((entry.modelData.kind === "place" || entry.modelData.kind === "bookmark" || (entry.modelData.kind === "smb" && entry.modelData.connected === true)) ? entry.modelData.path : "")
-                    accessibleName: label + (entry.isDevice && !entry.modelData.drive.is_mounted ? " (" + qsTr("unmounted") + ")" : "")
+                    accessibleName: label + (entry.isDevice && entry.modelData.drive.provider !== "mtp" && !entry.modelData.drive.is_mounted ? " (" + qsTr("unmounted") + ")" : "")
                     onActiveFocusChanged: if (activeFocus) placeList.positionViewAtIndex(entry.index, ListView.Contain)
                     onClicked: entry.isDevice ? rail.driveClicked(entry.modelData.drive, false) : rail.placeClicked(entry.modelData, false)
                     onMiddleClicked: entry.isDevice ? rail.driveClicked(entry.modelData.drive, true) : rail.placeClicked(entry.modelData, true)

@@ -48,9 +48,13 @@ public:
 
 Q_SIGNALS:
     void clipboardChanged();
+    void mtpDevicesChanged();
     // mode: "tab" (open folders), "select" (show items), "properties",
     // "window" (raise / new window request).
     void openRequested(const QStringList &paths, const QString &mode);
+
+private Q_SLOTS:
+    void notifyMtpDevicesChanged() { Q_EMIT mtpDevicesChanged(); }
 
 private:
     QVariantMap readClipboard() const;
@@ -102,6 +106,16 @@ bool forward_to_running_instance(const rust::Vec<rust::String> &paths, rust::Str
 // Registers D-Bus services, the `native` context property, the thumbnail
 // image provider and translations, and queues `paths` for opening.
 void setup_engine(QQmlApplicationEngine &engine, const rust::Vec<rust::String> &paths, rust::Str mode);
+
+// Enumerates MTP devices via KDE kiod6 / kmtpd over D-Bus without blocking the UI thread.
+// Returns a JSON-encoded array of MTP device objects:
+// [{"name": "...", "udi": "...", "url": "...", "model": "...", "icon": "device-mobile",
+//   "total_bytes": N, "free_bytes": N}, ...]
+rust::String list_kmtp_devices_json();
+
+// Lists directory contents of an MTP URL via KDE kiod6 / kmtpd D-Bus directly.
+// Returns JSON object: { "entries": [...], "error": "..." }
+rust::String list_mtp_directory(rust::Str url);
 
 // MIME helpers for Rust.
 rust::String mime_type_for(rust::Str path, bool sniff);

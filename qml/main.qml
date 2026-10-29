@@ -70,6 +70,16 @@ ApplicationWindow {
     function openDrive(d, inNewTab) {
         if (!d || !d.device)
             return;
+        if (d.provider === "mtp") {
+            window.cancelDriveOpen();
+            if (inNewTab) window.newTab(d.device);
+            else {
+                window.showFiles();
+                searchInput.text = "";
+                engine.set_path(d.device);
+            }
+            return;
+        }
         if (d.is_mounted && d.mount_point) {
             window.cancelDriveOpen();
             if (inNewTab) {
@@ -95,6 +105,10 @@ ApplicationWindow {
     function mountDrive(d) {
         if (!d)
             return;
+        if (d.provider === "mtp") {
+            window.openDrive(d, false);
+            return;
+        }
         if (core.busy)
             return;
         if (d.is_locked)
@@ -200,6 +214,11 @@ ApplicationWindow {
     Connections {
         target: nativeBridge
         function onClipboardChanged() { window.refreshCutSet(); }
+        function onMtpDevicesChanged() {
+            core.load_drives();
+            if (pane0.engine.location_kind === "mtp") pane0.engine.refresh();
+            if (pane1Loader.item && pane1Loader.item.engine.location_kind === "mtp") pane1Loader.item.engine.refresh();
+        }
         function onOpenRequested(paths, mode) { window.handleOpenRequest(paths, mode); }
     }
 
@@ -224,6 +243,8 @@ ApplicationWindow {
                 pane.engine.set_path(item.path);
             }
             showFiles();
+        } else if (pane.engine.location_kind === "mtp") {
+            window.toast("info", qsTr("Opening phone files is not available yet. You can browse folders and view file details in List view."));
         } else if (pane.engine.location_kind === "trash") {
             quickLook.showFor(item.path);
         } else if (theme.browseArchives && core.is_archive_file(item.path)) {
@@ -239,7 +260,7 @@ ApplicationWindow {
 
     function copySelection(cut) {
         var paths = selectedPaths();
-        if (paths.length === 0 || engine.location_kind === "archive" || engine.location_kind === "trash")
+        if (paths.length === 0 || engine.location_kind === "archive" || engine.location_kind === "trash" || engine.location_kind === "mtp")
             return;
         nativeBridge.setClipboardFiles(paths, cut);
         toast("info", cut ? theme.plural(paths.length, qsTr("1 item cut"), qsTr("%1 items cut")) : theme.plural(paths.length, qsTr("1 item copied"), qsTr("%1 items copied")));
@@ -291,7 +312,7 @@ ApplicationWindow {
             deleteSelection();
             return;
         }
-        if (engine.location_kind === "archive")
+        if (engine.location_kind === "archive" || engine.location_kind === "mtp")
             return;
         core.trash_items(JSON.stringify(paths));
         activePane.clearSelection();
@@ -299,7 +320,7 @@ ApplicationWindow {
 
     function deleteSelection() {
         var paths = selectedPaths();
-        if (paths.length === 0 || engine.location_kind === "archive")
+        if (paths.length === 0 || engine.location_kind === "archive" || engine.location_kind === "mtp")
             return;
         var pane = activePane;
         confirmDialog.ask(
@@ -311,6 +332,8 @@ ApplicationWindow {
     }
 
     function showProperties(paths) {
+        if (paths.some(function(path) { return path.indexOf("mtp:") === 0; }))
+            return;
         if (paths.length > 0)
             propsDialog.showFor(paths);
     }
@@ -322,6 +345,8 @@ ApplicationWindow {
     }
 
     function toggleQuickLook() {
+        if (engine.location_kind === "mtp")
+            return;
         if (quickLook.visible) {
             quickLook.close();
             return;
@@ -585,6 +610,10 @@ ApplicationWindow {
         var props = [];
         for (var i = 0; i < paths.length; ++i) {
             var p = paths[i];
+            if (p.indexOf("mtp://") === 0) {
+                if (mode !== "properties" && mode !== "select") newTab(p);
+                continue;
+            }
             var info = JSON.parse(core.get_item_info(p) || "{}");
             if (!info.exists)
                 continue;
@@ -631,6 +660,11 @@ ApplicationWindow {
         var first = !restored;
         for (var i = 0; i < pending.length; ++i) {
             var p = pending[i];
+            if (p.indexOf("mtp://") === 0) {
+                if (first) { pane0.engine.set_path(p); first = false; }
+                else newTab(p);
+                continue;
+            }
             var info = JSON.parse(core.get_item_info(p) || "{}");
             if (!info.exists)
                 continue;
@@ -659,7 +693,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+F"; onActivated: { window.showFiles(); searchInput.forceActiveFocus(); searchInput.selectAll(); } }
     Shortcut {
         sequence: "F2"
-        enabled: window.gridKeyboardReady
+        enabled: window.gridKeyboardReady && engine.location_kind !== "mtp"
         onActivated: {
             if (window.selectedPaths().length > 1)
                 batchRename.showFor(window.activePane.selectedItems());
@@ -693,11 +727,11 @@ ApplicationWindow {
     Shortcut { sequence: "Alt+Home"; onActivated: { window.showFiles(); engine.set_path(core.user_dir("HOME")); } }
     Shortcut { sequence: "Backspace"; enabled: window.gridKeyboardReady && engine.can_go_back; onActivated: engine.go_back() }
     Shortcut { sequences: ["F5", "Ctrl+R"]; onActivated: engine.refresh() }
-    Shortcut { sequence: "Ctrl+T"; onActivated: window.newTab(engine.location_kind === "dir" ? engine.current_path : "") }
+    Shortcut { sequence: "Ctrl+T"; onActivated: window.newTab((engine.location_kind === "dir" || engine.location_kind === "mtp") ? engine.current_path : "") }
     Shortcut { sequence: "Ctrl+W"; onActivated: window.closeTab(window.currentTab) }
     Shortcut { sequences: ["Ctrl+Tab", "Ctrl+PgDown"]; onActivated: window.switchTab((window.currentTab + 1) % window.tabs.length) }
     Shortcut { sequences: ["Ctrl+Shift+Tab", "Ctrl+PgUp"]; onActivated: window.switchTab((window.currentTab + window.tabs.length - 1) % window.tabs.length) }
-    Shortcut { sequence: "Ctrl+N"; onActivated: core.open_new_window(engine.location_kind === "dir" ? engine.current_path : "") }
+    Shortcut { sequence: "Ctrl+N"; onActivated: core.open_new_window((engine.location_kind === "dir" || engine.location_kind === "mtp") ? engine.current_path : "") }
     Shortcut { sequence: "Ctrl+Shift+N"; enabled: !window.anyModalOpen; onActivated: window.startNewFolder() }
     Shortcut { sequence: "F3"; onActivated: window.toggleSplit() }
     Shortcut { sequence: "F9"; onActivated: sidebar.expanded = !sidebar.expanded }
@@ -915,7 +949,7 @@ ApplicationWindow {
     function startEditingPath() {
         pathInput.text = window.activeView === "pc" ? "pc://"
             : (window.activeView === "settings" ? window.settingsUrl()
-            : (engine.location_kind === "dir" ? engine.current_path : ""));
+            : ((engine.location_kind === "dir" || engine.location_kind === "mtp") ? engine.current_path : ""));
         isEditingPath = true;
         pathInput.forceActiveFocus();
         pathInput.selectAll();
@@ -1042,7 +1076,7 @@ ApplicationWindow {
                         Keys.onSpacePressed: clicked()
                         Keys.onReturnPressed: clicked()
                         Keys.onEnterPressed: clicked()
-                        onClicked: window.newTab(engine.location_kind === "dir" ? engine.current_path : "")
+                        onClicked: window.newTab((engine.location_kind === "dir" || engine.location_kind === "mtp") ? engine.current_path : "")
                     }
                     TopIconButton {
                         id: newWindowToolbarButton
@@ -1054,7 +1088,7 @@ ApplicationWindow {
                         Keys.onSpacePressed: clicked()
                         Keys.onReturnPressed: clicked()
                         Keys.onEnterPressed: clicked()
-                        onClicked: core.open_new_window(engine.location_kind === "dir" ? engine.current_path : "")
+                        onClicked: core.open_new_window((engine.location_kind === "dir" || engine.location_kind === "mtp") ? engine.current_path : "")
                     }
                 }
             }
@@ -1114,7 +1148,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         text: window.activeView === "pc"
                             ? "pc://"
-                            : (engine.location_kind === "dir" || engine.location_kind === "archive"
+                            : (engine.location_kind === "dir" || engine.location_kind === "archive" || engine.location_kind === "mtp"
                                 ? engine.current_path : engine.location_kind + "://")
                         color: theme.textMain
                         font.pixelSize: theme.fs(13)
@@ -1556,6 +1590,8 @@ ApplicationWindow {
                     }
                     var drives = sidebar.drives || [];
                     for (var d = 0; d < drives.length; ++d) {
+                        if (kind === "mtp" && drives[d].provider === "mtp" && engine.current_path.indexOf(drives[d].device) === 0)
+                            return "device:" + drives[d].device;
                         if (drives[d].is_mounted && drives[d].mount_point && drives[d].mount_point === engine.current_path)
                             return "device:" + drives[d].device;
                     }
@@ -1761,7 +1797,7 @@ ApplicationWindow {
                             anchors.centerIn: parent
                             iconName: "plus"
                             accessibleName: qsTr("New tab")
-                            onClicked: window.newTab(engine.location_kind === "dir" ? engine.current_path : "")
+                            onClicked: window.newTab((engine.location_kind === "dir" || engine.location_kind === "mtp") ? engine.current_path : "")
                         }
                     }
                 }
@@ -2207,6 +2243,18 @@ ApplicationWindow {
         var single = paths.length === 1;
         var m = [];
 
+        if (kind === "mtp") {
+            if (item.is_dir) {
+                m.push({ text: qsTr("Open"), icon: "folder-open", action: function() { pane.openSelected(); } });
+                m.push({ text: qsTr("Open in New Tab"), icon: "tabs", action: function() {
+                    pane.selectedItems().filter(function(entry) { return entry.is_dir; }).forEach(function(entry) { window.newTab(entry.path); });
+                } });
+            }
+            m.push({ text: qsTr("Copy Location"), icon: "copy", action: function() { nativeBridge.setClipboardText(paths.join("\n")); } });
+            contextMenu.model = m;
+            contextMenu.openAt(mx, my);
+            return;
+        }
         if (kind === "trash") {
             m.push({ text: qsTr("Restore"), icon: "arrow-counter-clockwise", action: function() { core.restore_items(JSON.stringify(paths)); pane.clearSelection(); } });
             m.push({ text: qsTr("Preview"), icon: "eye", shortcut: "Space", action: function() { quickLook.showFor(item.path); } });

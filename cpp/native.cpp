@@ -7,8 +7,12 @@
 #include <QDBusConnectionInterface>
 #include <QDBusInterface>
 #include <QDBusReply>
+#include <QDBusArgument>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLocale>
 #include <QMimeData>
 #include <QMimeDatabase>
@@ -34,13 +38,17 @@ static rust::String toRust(const QString &s)
     return rust::String(utf8.constData(), static_cast<size_t>(utf8.size()));
 }
 
-// Accepts plain paths and file:// URIs; returns absolute local paths.
+// Accepts local paths and Loaf MTP locations. MTP validation happens in Rust.
 static QStringList toLocalPaths(const QStringList &items)
 {
     QStringList out;
     for (const QString &item : items) {
         if (item.isEmpty())
             continue;
+        if (item.startsWith(QLatin1String("mtp://"))) {
+            out << item;
+            continue;
+        }
         const QUrl url = item.startsWith(QLatin1Char('/')) ? QUrl::fromLocalFile(item) : QUrl::fromUserInput(item);
         if (url.isLocalFile())
             out << QFileInfo(url.toLocalFile()).absoluteFilePath();
@@ -51,6 +59,9 @@ static QStringList toLocalPaths(const QStringList &items)
 LoafNative::LoafNative(QObject *parent)
     : QObject(parent)
 {
+    QDBusConnection::sessionBus().connect(QStringLiteral("org.kde.kiod6"),
+        QStringLiteral("/modules/kmtpd"), QStringLiteral("org.kde.kmtp.Daemon"),
+        QStringLiteral("devicesChanged"), this, SLOT(notifyMtpDevicesChanged()));
     if (QClipboard *cb = QGuiApplication::clipboard()) {
         // Parse once per change: reading another app's clipboard can block,
         // so menus must never do it synchronously.
@@ -274,6 +285,232 @@ void set_application_identity(rust::Str version)
     QCoreApplication::setOrganizationName(QStringLiteral("loaf"));
     QGuiApplication::setApplicationDisplayName(QStringLiteral("Loaf"));
     QGuiApplication::setDesktopFileName(QStringLiteral("loaf"));
+}
+
+// Explicit messages avoid QDBusInterface's synchronous introspection before its
+// timeout is set. These helpers run on Rust workers, never the GUI thread.
+static QDBusMessage mtpCall(const QString &path, const QString &interface,
+                           const QString &method, const QVariantList &arguments = {})
+{
+    auto message = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kiod6"), path, interface, method);
+    message.setArguments(arguments);
+    return QDBusConnection::sessionBus().call(message, QDBus::Block, 1500);
+}
+
+static QVariantMap mtpProperties(const QString &path, const QString &interface)
+{
+    QDBusReply<QVariantMap> reply = mtpCall(path, QStringLiteral("org.freedesktop.DBus.Properties"),
+                                         QStringLiteral("GetAll"), {interface});
+    return reply.isValid() ? reply.value() : QVariantMap{};
+}
+
+rust::String list_kmtp_devices_json()
+{
+    // Plain Rust unit tests do not create a Qt application / D-Bus dispatcher.
+    if (!QCoreApplication::instance())
+        return toRust(QStringLiteral("[]"));
+    QJsonArray array;
+    QDBusReply<QList<QDBusObjectPath>> reply = mtpCall(QStringLiteral("/modules/kmtpd"),
+        QStringLiteral("org.kde.kmtp.Daemon"), QStringLiteral("listDevices"));
+    if (!reply.isValid())
+        return toRust(QStringLiteral("[]")); // KDE MTP support is optional.
+    for (const auto &device : reply.value()) {
+        const auto properties = mtpProperties(device.path(), QStringLiteral("org.kde.kmtp.Device"));
+        const QString udi = properties.value(QStringLiteral("udi")).toString();
+        if (udi.isEmpty())
+            continue; // Never silently open a different device via mtp:/.
+        const QString name = properties.value(QStringLiteral("friendlyName")).toString();
+        const QString udiHex = QString::fromLatin1(udi.toUtf8().toHex());
+        const QString url = QStringLiteral("mtp://") + udiHex + QLatin1Char('/');
+        quint64 total = 0, free = 0;
+        QDBusReply<QList<QDBusObjectPath>> storages = mtpCall(device.path(),
+            QStringLiteral("org.kde.kmtp.Device"), QStringLiteral("listStorages"));
+        if (storages.isValid()) {
+            for (const auto &storage : storages.value()) {
+                const auto props = mtpProperties(storage.path(), QStringLiteral("org.kde.kmtp.Storage"));
+                total += props.value(QStringLiteral("maxCapacity")).toULongLong();
+                free += props.value(QStringLiteral("freeSpaceInBytes")).toULongLong();
+            }
+        }
+        array.append(QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("udi"), udi},
+            {QStringLiteral("url"), url},
+            {QStringLiteral("model"), name}, {QStringLiteral("total_bytes"), static_cast<double>(total)},
+            {QStringLiteral("free_bytes"), static_cast<double>(free)}});
+    }
+    return toRust(QString::fromUtf8(QJsonDocument(array).toJson(QJsonDocument::Compact)));
+}
+
+static rust::String mtpError(const QString &message)
+{
+    const QJsonObject result{{QStringLiteral("entries"), QJsonArray{}}, {QStringLiteral("error"), message}};
+    return toRust(QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact)));
+}
+
+rust::String list_mtp_directory(rust::Str url)
+{
+    if (!QCoreApplication::instance()) {
+        return mtpError(QStringLiteral("D-Bus application instance not available"));
+    }
+
+    const QString urlStr = toQString(url);
+    if (!urlStr.startsWith(QStringLiteral("mtp://"))) {
+        return mtpError(QStringLiteral("Invalid MTP URL scheme"));
+    }
+
+    QString pathWithoutScheme = urlStr.mid(6);
+    if (pathWithoutScheme.endsWith(QLatin1Char('/')))
+        pathWithoutScheme.chop(1);
+    if (pathWithoutScheme.contains(QLatin1Char('?')) || pathWithoutScheme.contains(QLatin1Char('#'))) {
+        return mtpError(QStringLiteral("URL query and fragment are not supported"));
+    }
+
+    const QStringList parts = pathWithoutScheme.split(QLatin1Char('/'));
+    if (parts.isEmpty() || parts[0].isEmpty()) {
+        return mtpError(QStringLiteral("Empty MTP device identifier"));
+    }
+
+    const QString udiHex = parts[0];
+    const QByteArray udiBytes = QByteArray::fromHex(udiHex.toLatin1());
+    if (udiBytes.isEmpty() || udiHex != QString::fromLatin1(udiBytes.toHex())) {
+        return mtpError(QStringLiteral("Invalid UDI hex encoding"));
+    }
+    const QString targetUdi = QString::fromUtf8(udiBytes);
+
+    // 1. Locate device
+    QDBusReply<QList<QDBusObjectPath>> reply = mtpCall(QStringLiteral("/modules/kmtpd"),
+        QStringLiteral("org.kde.kmtp.Daemon"), QStringLiteral("listDevices"));
+    if (!reply.isValid()) {
+        return mtpError(QStringLiteral("KDE MTP daemon is not available"));
+    }
+
+    QDBusObjectPath devicePath;
+    for (const auto &device : reply.value()) {
+        const auto props = mtpProperties(device.path(), QStringLiteral("org.kde.kmtp.Device"));
+        if (props.value(QStringLiteral("udi")).toString() == targetUdi) {
+            devicePath = device;
+            break;
+        }
+    }
+
+    if (devicePath.path().isEmpty()) {
+        return mtpError(QStringLiteral("Device is disconnected"));
+    }
+
+    // 2. Query storages
+    QDBusReply<QList<QDBusObjectPath>> storagesReply = mtpCall(devicePath.path(),
+        QStringLiteral("org.kde.kmtp.Device"), QStringLiteral("listStorages"));
+    if (!storagesReply.isValid() || storagesReply.value().isEmpty()) {
+        return mtpError(QStringLiteral("No storages found. Unlock the device and enable file transfer."));
+    }
+
+    // Root listing: return storage descriptions as directories
+    if (parts.size() == 1) {
+        QJsonArray entries;
+        for (const auto &storage : storagesReply.value()) {
+            const auto props = mtpProperties(storage.path(), QStringLiteral("org.kde.kmtp.Storage"));
+            const QString desc = props.value(QStringLiteral("description")).toString();
+            if (desc.isEmpty())
+                continue;
+            entries.append(QJsonObject{
+                {QStringLiteral("name"), desc},
+                {QStringLiteral("is_dir"), true},
+                {QStringLiteral("size"), 0.0},
+                {QStringLiteral("modified"), 0.0}
+            });
+        }
+        if (entries.isEmpty())
+            return mtpError(QStringLiteral("No accessible storage. Unlock the phone and enable file transfer."));
+        QJsonObject res;
+        res.insert(QStringLiteral("entries"), entries);
+        return toRust(QString::fromUtf8(QJsonDocument(res).toJson(QJsonDocument::Compact)));
+    }
+
+    // Decode storage description from percent-encoded URL component
+    const QString storageDesc = QUrl::fromPercentEncoding(parts[1].toUtf8());
+    QList<QDBusObjectPath> matchingStorages;
+    for (const auto &storage : storagesReply.value()) {
+        const auto props = mtpProperties(storage.path(), QStringLiteral("org.kde.kmtp.Storage"));
+        if (props.value(QStringLiteral("description")).toString() == storageDesc) {
+            matchingStorages.append(storage);
+        }
+    }
+
+    if (matchingStorages.size() > 1) {
+        return mtpError(QStringLiteral("Ambiguous storage: multiple storages share the exact same description"));
+    }
+    if (matchingStorages.isEmpty()) {
+        return mtpError(QStringLiteral("Storage not found on device"));
+    }
+
+    const QDBusObjectPath targetStoragePath = matchingStorages.first();
+
+    // Build internal storage path: '/' + remaining decoded components joined by '/'
+    QString subPath = QStringLiteral("/");
+    for (int i = 2; i < parts.size(); ++i) {
+        const QString decodedSeg = QUrl::fromPercentEncoding(parts[i].toUtf8());
+        if (decodedSeg.isEmpty() || decodedSeg == QStringLiteral(".") || decodedSeg == QStringLiteral("..")
+            || decodedSeg.contains(QLatin1Char('/')) || decodedSeg.contains(QLatin1Char('\0'))) {
+            return mtpError(QStringLiteral("Invalid path component in URL"));
+        }
+        if (subPath.length() > 1) {
+            subPath += QLatin1Char('/');
+        }
+        subPath += decodedSeg;
+    }
+
+    // Call getFilesAndFolders on storage with 30000ms timeout
+    auto callMsg = QDBusMessage::createMethodCall(QStringLiteral("org.kde.kiod6"),
+        targetStoragePath.path(), QStringLiteral("org.kde.kmtp.Storage"), QStringLiteral("getFilesAndFolders"));
+    callMsg.setArguments({subPath});
+    QDBusMessage callReply = QDBusConnection::sessionBus().call(callMsg, QDBus::Block, 30000);
+
+    if (callReply.type() != QDBusMessage::ReplyMessage) {
+        return mtpError(QStringLiteral("Failed to list MTP storage: %1").arg(callReply.errorMessage()));
+    }
+
+    const QVariantList args = callReply.arguments();
+    if (args.size() != 2 || callReply.signature() != QLatin1String("a(uuustxs)i")) {
+        return mtpError(QStringLiteral("Unexpected response from MTP service"));
+    }
+
+    const int resultStatus = args[1].toInt();
+    if (resultStatus == 1) {
+        return mtpError(QStringLiteral("Path not found on MTP device"));
+    } else if (resultStatus == 2) {
+        return mtpError(QStringLiteral("Path is a file, not a directory"));
+    } else if (resultStatus != 0) {
+        return mtpError(QStringLiteral("Error listing path on MTP device"));
+    }
+
+    const QDBusArgument dbusArg = args[0].value<QDBusArgument>();
+    QJsonArray entries;
+    dbusArg.beginArray();
+    while (!dbusArg.atEnd()) {
+        quint32 itemId = 0;
+        quint32 parentId = 0;
+        quint32 storageId = 0;
+        QString filename;
+        quint64 filesize = 0;
+        qint64 modificationdate = 0;
+        QString filetype;
+
+        dbusArg.beginStructure();
+        dbusArg >> itemId >> parentId >> storageId >> filename >> filesize >> modificationdate >> filetype;
+        dbusArg.endStructure();
+
+        const bool isDir = (filetype == QStringLiteral("inode/directory"));
+        entries.append(QJsonObject{
+            {QStringLiteral("name"), filename},
+            {QStringLiteral("is_dir"), isDir},
+            {QStringLiteral("size"), static_cast<double>(filesize)},
+            {QStringLiteral("modified"), static_cast<double>(modificationdate)}
+        });
+    }
+    dbusArg.endArray();
+
+    QJsonObject res;
+    res.insert(QStringLiteral("entries"), entries);
+    return toRust(QString::fromUtf8(QJsonDocument(res).toJson(QJsonDocument::Compact)));
 }
 
 } // namespace loaf
