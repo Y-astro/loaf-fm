@@ -269,18 +269,13 @@ Rectangle {
                 required property int index
                 readonly property bool isDevice: modelData.kind === "device"
                 readonly property real headerHeight: isDevice && (index === 0 || placeList.model[index - 1].kind !== "device")
-                    ? (rail.expanded ? 32 : 12) : 0
+                    ? 12 : 0
                 property alias button: entryButton
                 height: 44 + headerHeight
                 Rectangle {
                     visible: entry.headerHeight > 0
                     x: 12; width: parent.width - 24; height: 1
                     color: theme.separator; opacity: 0.35
-                }
-                Text {
-                    visible: entry.headerHeight > 12
-                    x: 16; y: 8; text: qsTr("Devices")
-                    color: theme.textMuted; font.pixelSize: theme.fs(11); font.bold: true
                 }
                 RailButton {
                     id: entryButton
